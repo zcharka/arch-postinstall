@@ -31,7 +31,7 @@ SOFTWARE_LIST = [
     {"name": "DaVinci Resolve",  "pkg": "davinci-resolve",             "source": "aur",     "checked": False},
 ]
 
-# Środowiska graficzne (zostawiamy pacman)
+# Środowiska graficzne
 DE_LIST = [
     {"name": "KDE Plasma (Full)", "pkg": "plasma-meta",       "source": "pacman"},
     {"name": "GNOME (Full)",      "pkg": "gnome",             "source": "pacman"},
@@ -47,17 +47,15 @@ class InstallWorker(threading.Thread):
     def __init__(self, password, queue, on_progress, on_finish):
         super().__init__()
         self.password = password
-        self.queue = queue          # Lista pakietów do zainstalowania
+        self.queue = queue
         self.on_progress = on_progress
         self.on_finish = on_finish
         self.daemon = True
-        # +3 kroki ekstra: Update, Git/Base, Flatpak Setup
         self.total_steps = len(queue) + 3
 
     def run_cmd(self, cmd_list, use_shell=False):
         """Uruchamia komendę z sudo"""
         if cmd_list[0] == "sudo":
-            # Przekazanie hasła do sudo -S
             cmd_str = " ".join(cmd_list).replace("sudo", "sudo -S")
             full_cmd = f"echo '{self.password}' | {cmd_str}"
             use_shell = True
@@ -65,13 +63,12 @@ class InstallWorker(threading.Thread):
             full_cmd = cmd_list
 
         try:
-            # Używamy subprocess.run i ignorujemy wyjście (chyba że błąd)
             subprocess.run(
                 full_cmd,
                 shell=use_shell,
                 check=True,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE # Zbieramy błędy w razie czego
+                stderr=subprocess.PIPE
             )
             return True
         except subprocess.CalledProcessError as e:
@@ -80,29 +77,21 @@ class InstallWorker(threading.Thread):
 
     def setup_flatpak(self):
         """Instaluje flatpak i dodaje repozytorium Flathub"""
-        # 1. Instalacja pakietu flatpak przez pacmana
         if not self.run_cmd(["sudo", "pacman", "-S", "flatpak", "--noconfirm", "--needed"]):
             return False
-
-        # 2. Dodanie repozytorium Flathub (system-wide)
         cmd = ["sudo", "flatpak", "remote-add", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"]
         return self.run_cmd(cmd)
 
     def install_pkg(self, pkg_info):
         """Rozdziela instalację na Pacman / Yay / Flatpak"""
         pkg = pkg_info['pkg']
-        source = pkg_info.get('source', 'pacman') # Domyślnie pacman
+        source = pkg_info.get('source', 'pacman')
 
         if source == "flatpak":
-            # Instalacja Flatpak (bez potwierdzeń -y)
             cmd = ["sudo", "flatpak", "install", "flathub", pkg, "-y"]
-
         elif source == "aur":
-            # Instalacja YAY
             cmd = ["yay", "-S", pkg, "--noconfirm", "--answerdiff", "None", "--answerclean", "None"]
-
         else:
-            # Instalacja PACMAN (domyślna)
             cmd = ["sudo", "pacman", "-S", pkg, "--noconfirm", "--needed"]
 
         return self.run_cmd(cmd)
@@ -110,28 +99,22 @@ class InstallWorker(threading.Thread):
     def run(self):
         current_step = 0
 
-        # 1. Update repozytoriów
         self.on_progress(0, "Aktualizacja repozytoriów (Pacman)...")
         self.run_cmd(["sudo", "pacman", "-Sy"])
         current_step += 1
 
-        # 2. Instalacja Git/Base-devel (wymagane do AUR)
         self.on_progress(10, "Przygotowanie AUR (Git, Base-devel)...")
         self.run_cmd(["sudo", "pacman", "-S", "git", "base-devel", "--noconfirm", "--needed"])
         current_step += 1
 
-        # 3. Konfiguracja Flatpak
         self.on_progress(15, "Konfiguracja Flatpak i Flathub...")
         if not self.setup_flatpak():
             print("Nie udało się skonfigurować Flatpaka!")
         current_step += 1
 
-        # 4. Instalacja z kolejki
         success = True
         for item in self.queue:
             percent = int((current_step / self.total_steps) * 100)
-
-            # Ładny opis co się dzieje
             source_name = item.get('source', 'pacman').upper()
             self.on_progress(percent, f"Instalowanie [{source_name}]: {item['name']}...")
 
@@ -152,16 +135,18 @@ class InstallerWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Arch Setup")
         self.set_default_size(900, 650)
+
+        # WYMUSZENIE CIEMNEGO MOTYWU (Naprawia Warning)
+        manager = Adw.StyleManager.get_default()
+        manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+
         self.load_css()
 
-        # Przechowywanie stanu
         self.selected_software = []
         self.selected_de = []
 
-        # Główny kontener nawigacji
         self.stack = Adw.ViewStack()
 
-        # Pasek tytułu
         self.header = Adw.HeaderBar()
         self.header.set_show_end_title_buttons(True)
         self.header.set_show_start_title_buttons(False)
@@ -171,7 +156,6 @@ class InstallerWindow(Adw.ApplicationWindow):
         main_box.append(self.stack)
         self.set_content(main_box)
 
-        # Inicjalizacja stron
         self.init_welcome_page()
         self.init_software_page()
         self.init_de_page()
@@ -179,7 +163,6 @@ class InstallerWindow(Adw.ApplicationWindow):
         self.init_finish_page()
 
     def load_css(self):
-        """Style CSS"""
         provider = Gtk.CssProvider()
         css = b"""
         .blue-btn {
@@ -248,7 +231,6 @@ class InstallerWindow(Adw.ApplicationWindow):
         page = Adw.PreferencesPage()
         page.set_title("Wybór Oprogramowania")
 
-        # POPRAWKA 1: Zmiana znaku '&' na 'i' w tytule grupy
         group = Adw.PreferencesGroup(title="Aplikacje (Flatpak i AUR)")
 
         self.soft_checks = {}
@@ -269,7 +251,6 @@ class InstallerWindow(Adw.ApplicationWindow):
 
         page.add(group)
 
-        # Przycisk Dalej
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         btn_box.set_halign(Gtk.Align.CENTER)
         btn_box.set_margin_top(20)
@@ -281,7 +262,6 @@ class InstallerWindow(Adw.ApplicationWindow):
 
         btn_box.append(btn)
 
-        # POPRAWKA 2: Opakowanie przycisku w grupę dla Adw.PreferencesPage
         btn_group = Adw.PreferencesGroup()
         btn_group.add(btn_box)
         page.add(btn_group)
@@ -310,7 +290,6 @@ class InstallerWindow(Adw.ApplicationWindow):
 
         page.add(group)
 
-        # Przycisk Zainstaluj
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         btn_box.set_halign(Gtk.Align.CENTER)
         btn_box.set_margin_top(20)
@@ -321,7 +300,6 @@ class InstallerWindow(Adw.ApplicationWindow):
 
         btn_box.append(btn)
 
-        # POPRAWKA 2: Opakowanie przycisku w grupę
         btn_group = Adw.PreferencesGroup()
         btn_group.add(btn_box)
         page.add(btn_group)
@@ -339,8 +317,12 @@ class InstallerWindow(Adw.ApplicationWindow):
         self.prog_logo = Gtk.Image()
         self.prog_logo.set_pixel_size(150)
         texture = self.get_arch_logo()
-        if texture: self.prog_logo.set_paintable(texture)
-        else: self.prog_logo.set_icon_name("system-software-install-symbolic")
+
+        # --- NAPRAWA BŁĘDU ---
+        if texture:
+            self.prog_logo.set_from_paintable(texture) # To była ta linijka!
+        else:
+            self.prog_logo.set_from_icon_name("system-software-install-symbolic")
 
         self.progress_bar = Gtk.ProgressBar()
         self.progress_bar.add_css_class("violet-progress")
@@ -368,12 +350,10 @@ class InstallerWindow(Adw.ApplicationWindow):
     def on_install_clicked(self, btn):
         install_queue = []
 
-        # Soft
         for pkg, (check, info) in self.soft_checks.items():
             if check.get_active():
                 install_queue.append(info)
 
-        # DE
         for pkg, (check, info) in self.de_checks.items():
             if check.get_active():
                 install_queue.append(info)

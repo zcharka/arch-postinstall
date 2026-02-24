@@ -6,9 +6,9 @@ xdata = pkgtype=pkg
 pkgver = 2.0-1
 pkgdesc = Arch Linux Post-Install Wizard (GTK4/Libadwaita)
 url = https://github.com/zcharka/arch-postinstall
-builddate = 1771944076
+builddate = 1771944251
 packager = Unknown Packager
-size = 28582
+size = 28644
 arch = any
 license = GPL
 depend = python
