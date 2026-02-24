@@ -1,62 +1,51 @@
 import sys
 import os
 import subprocess
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QLabel, QStackedWidget, QProgressBar,
-                             QTextEdit, QInputDialog, QLineEdit, QListWidget, QListWidgetItem,
-                             QFrame, QSizePolicy)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QIcon, QColor, QFont
+import threading
+import gi
 
-# --- 1. BEZPIECZNE IMPORTY BACKENDU ---
-try:
-    from src.postinstall import plasma, system, gnome
-    BACKEND_LOADED = True
-except ImportError:
-    try:
-        from postinstall import plasma, system, gnome
-        BACKEND_LOADED = True
-    except ImportError:
-        BACKEND_LOADED = False
-        print("Backend not loaded - running in UI demo mode")
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Gtk, Adw, GLib, Gio
 
-# --- 2. LOGIKA INSTALACJI (WORKER) ---
-class InstallWorker(QThread):
-    progress_signal = pyqtSignal(int)
-    log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal()
-    error_signal = pyqtSignal(str)
+# --- 1. CONFIG: LOGIKA INSTALACJI (BACKEND) ---
+# Tutaj trzymamy logikę, którą ustaliliśmy wcześniej (pomijanie pakietów, yay auto-answer)
 
-    def __init__(self, password, tasks):
+class InstallWorker(threading.Thread):
+    def __init__(self, password, on_log, on_finish):
         super().__init__()
         self.password = password
-        self.tasks = tasks  # Lista zadań do wykonania
+        self.on_log = on_log       # Funkcja do aktualizacji tekstu w UI
+        self.on_finish = on_finish # Funkcja wywoływana po zakończeniu
+        self.daemon = True
 
-    def run_cmd(self, command, use_shell=True):
-        # 1. Automatyczne odpowiedzi dla YAY
+    def log(self, text):
+        # GTK nie jest "thread-safe", aktualizacje UI muszą iść przez GLib.idle_add
+        GLib.idle_add(self.on_log, text)
+
+    def run_cmd(self, command):
+        # 1. Automatyka dla YAY
         if "yay" in command and "--answer" not in command:
             command = command.replace("yay", "yay --answerdiff All --answerclean All --noconfirm")
 
-        # 2. Automatyczne pomijanie zainstalowanych pakietów (PACMAN)
+        # 2. Automatyka dla PACMAN (pomijanie zainstalowanych)
         if "pacman -S" in command and "--needed" not in command:
-             # Wstawiamy --needed po 'pacman -S' lub 'pacman -Sy'
-             if "-S" in command:
-                 command = command.replace("-S", "-S --needed")
-             elif "-Sy" in command:
-                 command = command.replace("-Sy", "-Sy --needed")
-             elif "-Syu" in command:
-                 command = command.replace("-Syu", "-Syu --needed")
+             if "-S" in command: command = command.replace("-S", "-S --needed")
+             elif "-Sy" in command: command = command.replace("-Sy", "-Sy --needed")
+             elif "-Syu" in command: command = command.replace("-Syu", "-Syu --needed")
 
         # 3. Obsługa SUDO
+        use_shell = False
         if command.startswith("sudo"):
             full_cmd = f"echo '{self.password}' | {command.replace('sudo', 'sudo -S')}"
             use_shell = True
         else:
-            full_cmd = command
+            full_cmd = command.split() # subprocess woli listę, chyba że shell=True
 
-        self.log_signal.emit(f"➜ {command}")
+        self.log(f"\n➜ {command}")
 
         try:
+            # Uruchamiamy proces
             process = subprocess.Popen(
                 full_cmd,
                 shell=use_shell,
@@ -66,248 +55,168 @@ class InstallWorker(QThread):
                 bufsize=1,
                 universal_newlines=True
             )
+
+            # Czytanie wyjścia linia po linii
             for line in process.stdout:
-                self.log_signal.emit(line.strip())
+                self.log(line.strip())
+
             process.wait()
             if process.returncode != 0:
-                self.log_signal.emit(f"[!] Kod wyjścia: {process.returncode}")
+                self.log(f"[!] BŁĄD: Kod wyjścia {process.returncode}")
         except Exception as e:
-            self.error_signal.emit(str(e))
+            self.log(f"[!!!] Błąd krytyczny: {str(e)}")
 
     def run(self):
-        try:
-            self.log_signal.emit("--- Rozpoczynam instalację ---")
-            total_steps = len(self.tasks)
+        self.log("--- ROZPOCZYNAM INSTALACJĘ ARCH POST-INSTALL ---")
 
-            for index, task_func in enumerate(self.tasks):
-                progress = int((index / total_steps) * 100)
-                self.progress_signal.emit(progress)
-                # Wykonaj funkcję z logiki, przekazując self.run_cmd
-                if callable(task_func):
-                    task_func(self.run_cmd)
+        # --- TU WPISZ KOMENDY DO WYKONANIA ---
+        # Przykładowa sekwencja (możesz tu zaimportować swoje moduły src.postinstall)
 
-            self.progress_signal.emit(100)
-            self.finished_signal.emit()
+        self.log(">> Aktualizacja repozytoriów...")
+        self.run_cmd("sudo pacman -Sy")
 
-        except Exception as e:
-            self.error_signal.emit(str(e))
+        self.log(">> Instalacja Gita i podstaw...")
+        self.run_cmd("sudo pacman -S git base-devel")
 
-# --- 3. UI W STYLU LINEXIN CENTER (SIDEBAR) ---
-class ModernInstaller(QMainWindow):
+        # Tutaj wstaw wywołanie swoich skryptów Plasmy, jeśli chcesz
+        # self.run_cmd("yay -S kwin-effects-better-blur-dx-git")
+
+        self.log(">> Instalacja zakończona!")
+        GLib.idle_add(self.on_finish)
+
+
+# --- 2. UI: WYGLĄD LINEXIN (LIBADWAITA) ---
+
+class InstallerWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Arch Setup")
+        self.set_default_size(800, 600)
+
+        # Główny kontener widoków (ViewStack pozwala przełączać ekrany)
+        self.stack = Adw.ViewStack()
+
+        # Pasek tytułowy (zintegrowany z oknem)
+        self.header = Adw.HeaderBar()
+
+        # Główny layout: Pasek na górze, reszta pod spodem
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        main_box.append(self.header)
+        main_box.append(self.stack)
+        self.set_content(main_box)
+
+        # --- EKRAN 1: POWITANIE (StatusPage) ---
+        self.page_welcome = Adw.StatusPage()
+        self.page_welcome.set_icon_name("system-software-install-symbolic") # Ikona systemowa
+        self.page_welcome.set_title("Instalator Systemu")
+        self.page_welcome.set_description("Skonfiguruj swój system Arch Linux jednym kliknięciem.\nZainstalowane zostaną motywy, ikony i poprawki.")
+
+        # Przycisk "Rozpocznij" (Pill button)
+        self.btn_start = Gtk.Button(label="Rozpocznij instalację")
+        self.btn_start.add_css_class("pill")     # Zaokrąglony kształt
+        self.btn_start.add_css_class("suggested-action") # Niebieski/Akcentowy kolor
+        self.btn_start.set_size_request(200, 50) # Duży przycisk
+        self.btn_start.set_halign(Gtk.Align.CENTER)
+        self.btn_start.connect("clicked", self.on_start_clicked)
+
+        # Dodajemy przycisk do strony powitalnej
+        self.page_welcome.set_child(self.btn_start)
+
+        # --- EKRAN 2: KONSOLA (Postęp) ---
+        self.page_progress = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.page_progress.set_margin_top(20)
+        self.page_progress.set_margin_bottom(20)
+        self.page_progress.set_margin_start(20)
+        self.page_progress.set_margin_end(20)
+
+        # Pole tekstowe (logi)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True) # Rozciągnij na całe okno
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        self.console_view = Gtk.TextView()
+        self.console_view.set_editable(False)
+        self.console_view.set_monospace(True)
+        self.console_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        self.console_view.add_css_class("card") # Wygląd karty
+
+        # Buffer przechowuje tekst
+        self.text_buffer = self.console_view.get_buffer()
+
+        scrolled.set_child(self.console_view)
+
+        # Etykieta statusu
+        self.lbl_status = Gtk.Label(label="Przygotowywanie...")
+        self.lbl_status.add_css_class("title-4")
+
+        self.page_progress.append(self.lbl_status)
+        self.page_progress.append(scrolled)
+
+        # Dodanie ekranów do stosu
+        self.stack.add_named(self.page_welcome, "welcome")
+        self.stack.add_named(self.page_progress, "progress")
+
+        self.stack.set_visible_child_name("welcome")
+
+    def on_start_clicked(self, button):
+        # Zapytaj o hasło w ładnym oknie
+        self.ask_password()
+
+    def ask_password(self):
+        # Tworzymy dialog (okienko)
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading="Wymagane uprawnienia",
+            body="Podaj hasło administratora (sudo), aby rozpocząć instalację."
+        )
+        dialog.add_response("cancel", "Anuluj")
+        dialog.add_response("ok", "Zatwierdź")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+
+        # Pole hasła w środku dialogu
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.pwd_entry = Gtk.PasswordEntry()
+        self.pwd_entry.set_placeholder_text("Hasło")
+        self.pwd_entry.connect("activate", lambda w: dialog.response("ok")) # Enter zatwierdza
+        box.append(self.pwd_entry)
+
+        dialog.set_extra_child(box)
+        dialog.connect("response", self.on_password_response)
+        dialog.present()
+
+    def on_password_response(self, dialog, response):
+        if response == "ok":
+            pwd = self.pwd_entry.get_text()
+            dialog.close()
+            # Przełącz na ekran konsoli i uruchom worker
+            self.stack.set_visible_child_name("progress")
+            self.lbl_status.set_text("Instalacja w toku...")
+
+            worker = InstallWorker(pwd, self.append_log, self.on_install_finished)
+            worker.start()
+        else:
+            dialog.close()
+
+    def append_log(self, text):
+        end_iter = self.text_buffer.get_end_iter()
+        self.text_buffer.insert(end_iter, text + "\n")
+        # Auto-scroll na dół
+        adj = self.console_view.get_parent().get_vadjustment()
+        adj.set_value(adj.get_upper())
+
+    def on_install_finished(self):
+        self.lbl_status.set_text("Zakończono pomyślnie!")
+        # Można tu dodać przycisk "Zamknij" lub "Restart"
+
+class InstallerApp(Adw.Application):
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Arch Post-Install")
-        self.resize(900, 600)
-        self.setup_styles()
+        super().__init__(application_id="com.arch.postinstall", flags=Gio.ApplicationFlags.FLAGS_NONE)
 
-        # Główny kontener
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        main_layout = QHBoxLayout(main_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        # --- LEWY PANEL (SIDEBAR) ---
-        self.sidebar = QListWidget()
-        self.sidebar.setObjectName("Sidebar")
-        self.sidebar.setFixedWidth(250)
-        self.sidebar.currentRowChanged.connect(self.change_page)
-        main_layout.addWidget(self.sidebar)
-
-        # --- PRAWY PANEL (CONTENT) ---
-        content_container = QWidget()
-        content_container.setObjectName("ContentArea")
-        content_layout = QVBoxLayout(content_container)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-
-        self.pages = QStackedWidget()
-        content_layout.addWidget(self.pages)
-        main_layout.addWidget(content_container)
-
-        # Inicjalizacja stron
-        self.init_home_page()
-        self.init_plasma_page()
-        self.init_console_page()
-
-        # Dodawanie pozycji do menu
-        self.add_menu_item("Start", "home")
-        self.add_menu_item("KDE Plasma", "monitor")
-        self.add_menu_item("Logi Instalacji", "terminal")
-
-        self.sidebar.setCurrentRow(0)
-
-    def setup_styles(self):
-        # Styl inspirowany Linexin Center (Adwaita Dark / Catppuccin)
-        self.setStyleSheet("""
-            QMainWindow { background-color: #1e1e2e; color: #cdd6f4; }
-            QWidget#ContentArea { background-color: #1e1e2e; }
-
-            /* Sidebar Styling */
-            QListWidget#Sidebar {
-                background-color: #181825;
-                border: none;
-                outline: none;
-                padding-top: 20px;
-            }
-            QListWidget#Sidebar::item {
-                height: 50px;
-                padding-left: 15px;
-                color: #a6adc8;
-                border-left: 3px solid transparent;
-            }
-            QListWidget#Sidebar::item:selected {
-                background-color: #313244;
-                color: #ffffff;
-                border-left: 3px solid #cba6f7;
-            }
-            QListWidget#Sidebar::item:hover {
-                background-color: #1e1e2e;
-            }
-
-            /* Buttons */
-            QPushButton {
-                background-color: #313244;
-                color: #cdd6f4;
-                border-radius: 8px;
-                padding: 10px 20px;
-                font-size: 14px;
-                border: 1px solid #45475a;
-            }
-            QPushButton:hover {
-                background-color: #45475a;
-                border: 1px solid #585b70;
-            }
-            QPushButton#PrimaryBtn {
-                background-color: #cba6f7;
-                color: #1e1e2e;
-                font-weight: bold;
-                border: none;
-            }
-            QPushButton#PrimaryBtn:hover { background-color: #d8b4fe; }
-
-            /* Text & Console */
-            QLabel { font-size: 14px; }
-            QLabel#Header { font-size: 24px; font-weight: bold; color: #ffffff; margin-bottom: 10px; }
-            QTextEdit {
-                background-color: #11111b;
-                color: #a6e3a1;
-                border-radius: 10px;
-                border: 1px solid #313244;
-                font-family: 'Consolas', 'Monospace';
-            }
-            QProgressBar {
-                background-color: #313244;
-                border-radius: 5px;
-                height: 10px;
-                text-align: center;
-            }
-            QProgressBar::chunk {
-                background-color: #cba6f7;
-                border-radius: 5px;
-            }
-        """)
-
-    def add_menu_item(self, name, icon_name=None):
-        item = QListWidgetItem(name)
-        # Tu można by dodać ikony (QIcon), jeśli masz pliki
-        item.setSizeHint(QSize(0, 50))
-        font = QFont()
-        font.setPointSize(11)
-        item.setFont(font)
-        self.sidebar.addItem(item)
-
-    def change_page(self, index):
-        self.pages.setCurrentIndex(index)
-
-    # --- STRONA 1: HOME ---
-    def init_home_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-
-        header = QLabel("Witaj w Instalatorze Arch")
-        header.setObjectName("Header")
-        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        desc = QLabel("Wybierz moduł z menu po lewej stronie, aby rozpocząć konfigurację.\nTen program zainstaluje motywy, ikony i skonfiguruje system.")
-        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        desc.setStyleSheet("color: #a6adc8;")
-
-        layout.addStretch()
-        layout.addWidget(header)
-        layout.addWidget(desc)
-        layout.addStretch()
-
-        self.pages.addWidget(page)
-
-    # --- STRONA 2: PLASMA CONFIG ---
-    def init_plasma_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-
-        header = QLabel("Konfiguracja KDE Plasma")
-        header.setObjectName("Header")
-
-        info = QLabel("Zostaną zainstalowane:\n- Motyw Layan\n- Ikony Tela Circle\n- Kursor Bibata Classic\n- Efekty Kwin")
-        info.setStyleSheet("background-color: #313244; padding: 15px; border-radius: 10px;")
-
-        btn_install = QPushButton("Zainstaluj i Konfiguruj")
-        btn_install.setObjectName("PrimaryBtn")
-        btn_install.clicked.connect(lambda: self.start_installation("plasma"))
-
-        layout.addWidget(header)
-        layout.addWidget(info)
-        layout.addStretch()
-        layout.addWidget(btn_install)
-
-        self.pages.addWidget(page)
-
-    # --- STRONA 3: KONSOLA (LOGI) ---
-    def init_console_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-
-        self.status_label = QLabel("Oczekiwanie na zadania...")
-        self.status_label.setObjectName("Header")
-
-        self.progress = QProgressBar()
-        self.progress.setValue(0)
-
-        self.console = QTextEdit()
-        self.console.setReadOnly(True)
-
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.progress)
-        layout.addWidget(self.console)
-
-        self.pages.addWidget(page)
-
-    # --- LOGIKA STARTU ---
-    def start_installation(self, module_type):
-        pwd, ok = QInputDialog.getText(self, "Uprawnienia Root", "Podaj hasło administratora (sudo):", QLineEdit.EchoMode.Password)
-        if not ok or not pwd:
-            return
-
-        # Przełącz na zakładkę konsoli (ostatnią)
-        self.sidebar.setCurrentRow(self.sidebar.count() - 1)
-        self.console.clear()
-
-        tasks = []
-
-        # Definiowanie zadań w zależności od wyboru
-        if module_type == "plasma" and BACKEND_LOADED:
-            # Używamy lambdy, żeby przekazać run_cmd później w workerze
-            tasks.append(lambda cmd_runner: plasma.install_plasma_deps(cmd_runner))
-            tasks.append(lambda cmd_runner: plasma.apply_custom_look(cmd_runner))
-            tasks.append(lambda cmd_runner: plasma.apply_layout_preset(cmd_runner))
-
-        self.worker = InstallWorker(pwd, tasks)
-        self.worker.log_signal.connect(self.console.append)
-        self.worker.progress_signal.connect(self.progress.setValue)
-        self.worker.finished_signal.connect(lambda: self.status_label.setText("Zakończono pomyślnie!"))
-        self.worker.start()
+    def do_activate(self):
+        win = self.props.active_window
+        if not win:
+            win = InstallerWindow(self)
+        win.present()
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = ModernInstaller()
-    window.show()
-    sys.exit(app.exec())
+    app = InstallerApp()
+    app.run(sys.argv)
