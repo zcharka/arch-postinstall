@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=Presets
-Comment=Zmień wygląd systemu (Arch Presets)
+Comment=Zmień wygląd systemu
 Exec=arch-presets
 Icon=preferences-desktop-theme
 Terminal=false
