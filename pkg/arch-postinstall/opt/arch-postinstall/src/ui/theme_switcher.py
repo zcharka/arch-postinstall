@@ -9,22 +9,22 @@ gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Gio, Gdk
 
 # ==============================================================================
-# 🔮 TWOJE PRESETY (KONFIGURACJA)
+# 🔮 PRESETY
 # ==============================================================================
 
 PRESETS = [
     {
         "id": "layan_dock",
         "name": "Layan Dock",
-        "desc": "Styl MacOS. Pasek na górze, pływający dok na dole. Efekt Blur i zaokrąglone rogi.",
-        "icon": "user-desktop-symbolic", # Ikona systemowa
+        "desc": "Styl MacOS. Pasek na górze, pływający dok na dole.\nMotyw Layan + Efekty.",
+        "icon": "user-desktop-symbolic",
         "pkgs": ["layan-kde-git", "bibata-cursor-theme-bin", "kwin-effects-better-blur-dx-git", "kwin-effect-rounded-corners-git"],
         "script": "dock"
     },
     {
         "id": "layan_std",
         "name": "Layan Standard",
-        "desc": "Klasyczny układ (Windows-like) z nowoczesnym motywem Layan.",
+        "desc": "Klasyczny układ z nowoczesnym motywem Layan.",
         "icon": "view-app-grid-symbolic",
         "pkgs": ["layan-kde-git", "bibata-cursor-theme-bin"],
         "script": "standard"
@@ -32,14 +32,14 @@ PRESETS = [
     {
         "id": "clean",
         "name": "Czysta Plasma",
-        "desc": "Przywraca domyślny, czysty wygląd Arch Linux.",
+        "desc": "Przywraca domyślny wygląd Arch Linux.",
         "icon": "edit-delete-symbolic",
         "pkgs": [],
         "script": "none"
     }
 ]
 
-# SKRYPTY JS DLA KDE (UKŁAD PANELI)
+# SKRYPTY JS DLA KDE
 JS_DOCK = """
 var allPanels = panels();
 for (var i = 0; i < allPanels.length; i++) { allPanels[i].remove(); }
@@ -75,7 +75,7 @@ panel.addWidget("org.kde.plasma.clock");
 """
 
 # ==============================================================================
-# ⚙️ BACKEND (INSTALATOR)
+# ⚙️ BACKEND
 # ==============================================================================
 
 class ApplyWorker(threading.Thread):
@@ -91,7 +91,7 @@ class ApplyWorker(threading.Thread):
         subprocess.run(f"echo '{self.password}' | sudo -S {cmd}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def run_yay(self, pkg):
-        self.run_sudo("ls") # Odśwież sudo
+        self.run_sudo("ls")
         subprocess.run(f"yay -S {pkg} --noconfirm --answerdiff None --answerclean None", shell=True)
 
     def apply_js_layout(self, script_content):
@@ -99,7 +99,6 @@ class ApplyWorker(threading.Thread):
         spath = "/tmp/layout.js"
         with open(spath, "w") as f: f.write(script_content)
 
-        # Tworzymy autostart, który wykona się po restarcie
         desktop = f"""[Desktop Entry]
 Type=Application
 Name=ThemeApply
@@ -113,12 +112,10 @@ X-KDE-autostart-after=panel
         pkgs = self.preset["pkgs"]
         total = len(pkgs) + 2
 
-        # 1. Instalacja pakietów
         for i, pkg in enumerate(pkgs):
             self.on_progress(int((i/total)*100), f"Instalowanie: {pkg}...")
             self.run_yay(pkg)
 
-        # 2. Aplikowanie skryptów
         self.on_progress(90, "Konfiguracja KDE Plasma...")
         if self.preset["script"] == "dock":
             self.apply_js_layout(JS_DOCK)
@@ -129,7 +126,7 @@ X-KDE-autostart-after=panel
         GLib.idle_add(self.on_finish)
 
 # ==============================================================================
-# 🎨 GUI (STYL LINEXIN / LIBADWAITA)
+# 🎨 GUI (POPRAWIONE)
 # ==============================================================================
 
 class MainWindow(Adw.ApplicationWindow):
@@ -141,75 +138,44 @@ class MainWindow(Adw.ApplicationWindow):
         manager = Adw.StyleManager.get_default()
         manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
-        # GŁÓWNY KONTENER (CLAMP - centruje zawartość jak w Linexin)
-        clamp = Adw.Clamp()
-        clamp.set_maximum_size(700)
+        # Używamy Adw.PreferencesPage - to GWARANTUJE poprawny wygląd
+        page = Adw.PreferencesPage()
+        page.set_title("Wybierz Styl")
+        page.set_icon_name("preferences-desktop-theme")
 
-        # BOX NA ZAWARTOŚĆ
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
-        box.set_margin_top(40)
-        box.set_margin_bottom(40)
-        clamp.set_child(box)
-
-        # 1. NAGŁÓWEK (LOGO I TYTUŁ)
-        header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        icon = Gtk.Image.new_from_icon_name("preferences-desktop-theme")
-        icon.set_pixel_size(96)
-
-        title = Gtk.Label(label="Wybierz Styl")
-        title.add_css_class("title-1")
-
-        subtitle = Gtk.Label(label="Dostosuj wygląd środowiska KDE Plasma")
-        subtitle.add_css_class("body")
-        subtitle.get_style_context().add_class("dim-label")
-
-        header_box.append(icon)
-        header_box.append(title)
-        header_box.append(subtitle)
-        box.append(header_box)
-
-        # 2. LISTA PRESETÓW (ADW.PREFERENCESGROUP)
-        # To klucz do wyglądu - używamy natywnych grup Adwaita
-        self.preset_group = Adw.PreferencesGroup()
-        self.preset_group.set_title("Dostępne Presety")
+        # Grupa Presetów
+        group = Adw.PreferencesGroup()
+        group.set_title("Dostępne Presety")
+        group.set_description("Kliknij 'Zastosuj', aby pobrać i ustawić wygląd.")
 
         for preset in PRESETS:
             row = Adw.ActionRow()
             row.set_title(preset["name"])
             row.set_subtitle(preset["desc"])
-            row.set_icon_name(preset["icon"])
 
-            # Przycisk "Zastosuj" w wierszu
+            # Ikona po lewej (używamy add_prefix zamiast set_icon_name aby uniknąć błędów)
+            icon = Gtk.Image.new_from_icon_name(preset["icon"])
+            row.add_prefix(icon)
+
+            # Przycisk "Zastosuj" po prawej
             btn = Gtk.Button(label="Zastosuj")
-            btn.add_css_class("pill") # Zaokrąglony
-            btn.add_css_class("suggested-action") # Niebieski akcent
+            btn.add_css_class("pill")
+            btn.add_css_class("suggested-action")
             btn.set_valign(Gtk.Align.CENTER)
             btn.connect("clicked", self.on_apply_clicked, preset)
 
             row.add_suffix(btn)
-            self.preset_group.add(row)
+            group.add(row)
 
-        box.append(self.preset_group)
+        page.add(group)
 
-        # SCROLL WINDOW (Żeby można było przewijać)
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_child(clamp)
-
-        # HEADER BAR (Pasek tytułu)
-        hb = Adw.HeaderBar()
-        hb.set_show_end_title_buttons(True)
-
-        root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        root_box.append(hb)
-        root_box.append(scroll)
-
-        self.set_content(root_box)
+        # Ustawiamy stronę jako zawartość okna
+        self.set_content(page)
 
     def on_apply_clicked(self, btn, preset):
         self.ask_password(preset)
 
     def ask_password(self, preset):
-        # Dialog hasła w stylu Adwaita
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         entry = Gtk.PasswordEntry()
         entry.set_placeholder_text("Hasło sudo")
@@ -225,7 +191,6 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.add_response("apply", "Zatwierdź")
         dialog.set_response_appearance("apply", Adw.ResponseAppearance.SUGGESTED)
 
-        # Callback dla odpowiedzi
         def response_cb(d, response):
             if response == "apply":
                 pwd = entry.get_text()
@@ -236,7 +201,6 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.present()
 
     def show_progress(self, password, preset):
-        # Tworzymy okno postępu (Modal)
         self.prog_win = Adw.Window(transient_for=self)
         self.prog_win.set_default_size(400, 300)
         self.prog_win.set_modal(True)
@@ -257,21 +221,17 @@ class MainWindow(Adw.ApplicationWindow):
         box.append(self.pbar)
         box.append(self.lbl_status)
 
-        # Hack żeby dodać box do StatusPage (używając set_child)
         content.set_child(box)
         self.prog_win.set_content(content)
         self.prog_win.present()
 
-        # Start Workera
         ApplyWorker(password, preset, self.update_progress, self.finish_progress).start()
 
     def update_progress(self, pct, text):
         GLib.idle_add(lambda: (self.pbar.set_fraction(pct/100), self.lbl_status.set_text(text)))
 
     def finish_progress(self):
-        # Zamknij okno postępu i pokaż info o sukcesie
         self.prog_win.close()
-
         toast = Adw.Toast.new("Gotowe! Wyloguj się, aby zobaczyć zmiany.")
         self.add_toast(toast)
 
