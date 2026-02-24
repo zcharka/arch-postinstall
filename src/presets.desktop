@@ -1,6 +1,6 @@
 [Desktop Entry]
-Name=Presets
-Comment=Zmień wygląd systemu
+Name=RatPresets
+Comment=Zmień wygląd systemu (KDE Plasma)
 Exec=arch-presets
 Icon=preferences-desktop-theme
 Terminal=false

@@ -126,7 +126,7 @@ X-KDE-autostart-after=panel
         GLib.idle_add(self.on_finish)
 
 # ==============================================================================
-# 🎨 GUI (POPRAWIONE)
+# 🎨 GUI
 # ==============================================================================
 
 class MainWindow(Adw.ApplicationWindow):
@@ -134,16 +134,13 @@ class MainWindow(Adw.ApplicationWindow):
         super().__init__(application=app, title="Presets")
         self.set_default_size(800, 600)
 
-        # WYGLĄD
         manager = Adw.StyleManager.get_default()
         manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
-        # Używamy Adw.PreferencesPage - to GWARANTUJE poprawny wygląd
         page = Adw.PreferencesPage()
         page.set_title("Wybierz Styl")
         page.set_icon_name("preferences-desktop-theme")
 
-        # Grupa Presetów
         group = Adw.PreferencesGroup()
         group.set_title("Dostępne Presety")
         group.set_description("Kliknij 'Zastosuj', aby pobrać i ustawić wygląd.")
@@ -153,11 +150,9 @@ class MainWindow(Adw.ApplicationWindow):
             row.set_title(preset["name"])
             row.set_subtitle(preset["desc"])
 
-            # Ikona po lewej (używamy add_prefix zamiast set_icon_name aby uniknąć błędów)
             icon = Gtk.Image.new_from_icon_name(preset["icon"])
             row.add_prefix(icon)
 
-            # Przycisk "Zastosuj" po prawej
             btn = Gtk.Button(label="Zastosuj")
             btn.add_css_class("pill")
             btn.add_css_class("suggested-action")
@@ -168,8 +163,6 @@ class MainWindow(Adw.ApplicationWindow):
             group.add(row)
 
         page.add(group)
-
-        # Ustawiamy stronę jako zawartość okna
         self.set_content(page)
 
     def on_apply_clicked(self, btn, preset):
@@ -177,8 +170,12 @@ class MainWindow(Adw.ApplicationWindow):
 
     def ask_password(self, preset):
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+
         entry = Gtk.PasswordEntry()
-        entry.set_placeholder_text("Hasło sudo")
+        # --- NAPRAWA BŁĘDU ---
+        # Zamiast entry.set_placeholder_text używamy set_property
+        entry.set_property("placeholder-text", "Hasło sudo")
+
         body.append(Gtk.Label(label="Wymagane uprawnienia administratora."))
         body.append(entry)
 
@@ -237,7 +234,7 @@ class MainWindow(Adw.ApplicationWindow):
 
 class PresetsApp(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="com.arch.presets", flags=Gio.ApplicationFlags.FLAGS_NONE)
+        super().__init__(application=app, title="Presets") # ZMIENIONO NAZWĘ APLIKACJI
 
     def do_activate(self):
         win = self.props.active_window
