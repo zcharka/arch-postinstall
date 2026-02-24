@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=RatPresets
-Comment=Zmień wygląd systemu (KDE Plasma)
-Exec=arch-presets
+Comment=Zmień wygląd systemu
+Exec=linexin-desktop-presets
 Icon=preferences-desktop-theme
 Terminal=false
 Type=Application
