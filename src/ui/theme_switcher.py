@@ -9,80 +9,65 @@ gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Gio, Gdk
 
 # ==============================================================================
-# 🔮 DANE PRESETÓW
+# 🔮 TWOJE PRESETY (KONFIGURACJA)
 # ==============================================================================
 
-PRESETS = {
-    "kde": [
-        {
-            "id": "kde_dock",
-            "title": "✨ Layan Dock",
-            "desc": "Pasek na górze, pływający dock na dole.\nMotyw Layan + Efekty.",
-            "pkgs": ["layan-kde-git", "bibata-cursor-theme-bin", "kwin-effects-better-blur-dx-git", "kwin-effect-rounded-corners-git"],
-            "script_type": "js_dock"
-        },
-        {
-            "id": "kde_standard",
-            "title": "🎨 Layan Standard",
-            "desc": "Klasyczny układ z nowoczesnym motywem.\nLayan Theme.",
-            "pkgs": ["layan-kde-git", "bibata-cursor-theme-bin"],
-            "script_type": "js_standard"
-        },
-        {
-            "id": "clean",
-            "title": "🧹 Czysta Plasma",
-            "desc": "Przywraca domyślny wygląd Arch Linux.",
-            "pkgs": [],
-            "script_type": "none"
-        }
-    ],
-    "gnome": [
-        {
-            "id": "gnome_macos",
-            "title": "🍎 WhiteSur (MacOS Style)",
-            "desc": "Motyw WhiteSur, ikony MacOS, Dock na dole.",
-            "pkgs": ["whitesur-gtk-theme-git", "whitesur-icon-theme-git", "bibata-cursor-theme-bin"],
-            "script_type": "gnome_macos"
-        },
-        {
-            "id": "gnome_dark",
-            "title": "🌑 Adwaita Pro",
-            "desc": "Ciemny motyw systemowy, kursor Bibata.",
-            "pkgs": ["bibata-cursor-theme-bin", "adw-gtk3-git"],
-            "script_type": "gnome_dark"
-        }
-    ]
-}
+PRESETS = [
+    {
+        "id": "layan_dock",
+        "name": "Layan Dock",
+        "desc": "Styl MacOS. Pasek na górze, pływający dok na dole. Efekt Blur i zaokrąglone rogi.",
+        "icon": "user-desktop-symbolic", # Ikona systemowa
+        "pkgs": ["layan-kde-git", "bibata-cursor-theme-bin", "kwin-effects-better-blur-dx-git", "kwin-effect-rounded-corners-git"],
+        "script": "dock"
+    },
+    {
+        "id": "layan_std",
+        "name": "Layan Standard",
+        "desc": "Klasyczny układ (Windows-like) z nowoczesnym motywem Layan.",
+        "icon": "view-app-grid-symbolic",
+        "pkgs": ["layan-kde-git", "bibata-cursor-theme-bin"],
+        "script": "standard"
+    },
+    {
+        "id": "clean",
+        "name": "Czysta Plasma",
+        "desc": "Przywraca domyślny, czysty wygląd Arch Linux.",
+        "icon": "edit-delete-symbolic",
+        "pkgs": [],
+        "script": "none"
+    }
+]
 
-# Skrypty JS dla KDE
-JS_KDE_DOCK = """
+# SKRYPTY JS DLA KDE (UKŁAD PANELI)
+JS_DOCK = """
 var allPanels = panels();
 for (var i = 0; i < allPanels.length; i++) { allPanels[i].remove(); }
 var topPanel = new Panel();
 topPanel.location = "top";
 topPanel.height = 30;
 topPanel.addWidget("org.kde.plasma.kickoff");
-topPanel.addWidget("org.kde.plasma.pager");
 topPanel.addWidget("org.kde.plasma.panelspacer");
 topPanel.addWidget("org.kde.plasma.clock");
+topPanel.addWidget("org.kde.plasma.panelspacer");
 topPanel.addWidget("org.kde.plasma.systemtray");
+
 var bottomPanel = new Panel();
 bottomPanel.location = "bottom";
-bottomPanel.height = 48;
+bottomPanel.height = 52;
 bottomPanel.lengthMode = "fit";
 bottomPanel.hiding = "dodgewindows";
 bottomPanel.floating = true;
 bottomPanel.addWidget("org.kde.plasma.icontasks");
 """
 
-JS_KDE_STANDARD = """
+JS_STD = """
 var allPanels = panels();
 for (var i = 0; i < allPanels.length; i++) { allPanels[i].remove(); }
 var panel = new Panel();
 panel.location = "bottom";
 panel.height = 44;
 panel.addWidget("org.kde.plasma.kickoff");
-panel.addWidget("org.kde.plasma.pager");
 panel.addWidget("org.kde.plasma.icontasks");
 panel.addWidget("org.kde.plasma.panelspacer");
 panel.addWidget("org.kde.plasma.systemtray");
@@ -90,221 +75,215 @@ panel.addWidget("org.kde.plasma.clock");
 """
 
 # ==============================================================================
-# 🧠 BACKEND
+# ⚙️ BACKEND (INSTALATOR)
 # ==============================================================================
 
-class ThemeWorker(threading.Thread):
-    def __init__(self, password, env, preset_data, on_progress, on_finish):
+class ApplyWorker(threading.Thread):
+    def __init__(self, password, preset, on_progress, on_finish):
         super().__init__()
         self.password = password
-        self.env = env
-        self.data = preset_data
+        self.preset = preset
         self.on_progress = on_progress
         self.on_finish = on_finish
         self.daemon = True
 
     def run_sudo(self, cmd):
-        full = f"echo '{self.password}' | sudo -S {cmd}"
-        subprocess.run(full, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(f"echo '{self.password}' | sudo -S {cmd}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def run_yay(self, pkg):
-        self.run_sudo("ls") # Refresh token
-        cmd = f"yay -S {pkg} --noconfirm --answerdiff None --answerclean None"
-        subprocess.run(cmd, shell=True)
+        self.run_sudo("ls") # Odśwież sudo
+        subprocess.run(f"yay -S {pkg} --noconfirm --answerdiff None --answerclean None", shell=True)
 
-    def apply_kde(self):
-        pkgs = self.data.get("pkgs", [])
-        total = len(pkgs) + 2
-        for i, pkg in enumerate(pkgs):
-            self.on_progress(int((i/total)*100), f"Instalacja: {pkg}")
-            self.run_yay(pkg)
+    def apply_js_layout(self, script_content):
+        os.makedirs(os.path.expanduser("~/.config/autostart"), exist_ok=True)
+        spath = "/tmp/layout.js"
+        with open(spath, "w") as f: f.write(script_content)
 
-        stype = self.data.get("script_type")
-        if stype != "none":
-            self.on_progress(80, "Konfiguracja układu Plasma...")
-            js = JS_KDE_DOCK if stype == "js_dock" else JS_KDE_STANDARD
-
-            os.makedirs(os.path.expanduser("~/.config/autostart"), exist_ok=True)
-            spath = "/tmp/layout.js"
-            with open(spath, "w") as f: f.write(js)
-
-            desktop_file = f"""[Desktop Entry]
+        # Tworzymy autostart, który wykona się po restarcie
+        desktop = f"""[Desktop Entry]
 Type=Application
 Name=ThemeApply
-Exec=sh -c 'qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$(cat {spath})"; lookandfeeltool -a com.github.vinceliuice.Layan; rm ~/.config/autostart/theme_apply.desktop'
+Exec=sh -c 'sleep 5; qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$(cat {spath})"; lookandfeeltool -a com.github.vinceliuice.Layan; kwriteconfig6 --file kwinrc --group Plugins --key betterblurEnabled true; kwriteconfig6 --file kwinrc --group Plugins --key roundedcornersEnabled true; rm ~/.config/autostart/theme_apply.desktop'
 X-KDE-autostart-after=panel
 """
-            with open(os.path.expanduser("~/.config/autostart/theme_apply.desktop"), "w") as f:
-                f.write(desktop_file)
+        with open(os.path.expanduser("~/.config/autostart/theme_apply.desktop"), "w") as f:
+            f.write(desktop)
 
     def run(self):
-        self.on_progress(5, "Przygotowanie...")
-        if self.env == "kde": self.apply_kde()
-        # Tu można dodać logikę GNOME
-        self.on_progress(100, "Gotowe! Zrestartuj sesję.")
+        pkgs = self.preset["pkgs"]
+        total = len(pkgs) + 2
+
+        # 1. Instalacja pakietów
+        for i, pkg in enumerate(pkgs):
+            self.on_progress(int((i/total)*100), f"Instalowanie: {pkg}...")
+            self.run_yay(pkg)
+
+        # 2. Aplikowanie skryptów
+        self.on_progress(90, "Konfiguracja KDE Plasma...")
+        if self.preset["script"] == "dock":
+            self.apply_js_layout(JS_DOCK)
+        elif self.preset["script"] == "standard":
+            self.apply_js_layout(JS_STD)
+
+        self.on_progress(100, "Gotowe!")
         GLib.idle_add(self.on_finish)
 
 # ==============================================================================
-# 🎨 GUI
+# 🎨 GUI (STYL LINEXIN / LIBADWAITA)
 # ==============================================================================
 
-class ThemeAppWindow(Adw.ApplicationWindow):
+class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Presets")
-        self.set_default_size(900, 650)
+        self.set_default_size(800, 600)
 
-        self.current_de = self.detect_de()
-        print(f"DEBUG: Wykryto środowisko: {self.current_de}")
-
+        # WYGLĄD
         manager = Adw.StyleManager.get_default()
         manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
-        self.load_css()
 
-        self.stack = Adw.ViewStack()
-        self.header = Adw.HeaderBar()
+        # GŁÓWNY KONTENER (CLAMP - centruje zawartość jak w Linexin)
+        clamp = Adw.Clamp()
+        clamp.set_maximum_size(700)
 
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        main_box.append(self.header)
-        main_box.append(self.stack)
-        self.set_content(main_box)
+        # BOX NA ZAWARTOŚĆ
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        box.set_margin_top(40)
+        box.set_margin_bottom(40)
+        clamp.set_child(box)
 
-        self.init_pages()
+        # 1. NAGŁÓWEK (LOGO I TYTUŁ)
+        header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        icon = Gtk.Image.new_from_icon_name("preferences-desktop-theme")
+        icon.set_pixel_size(96)
 
-    def detect_de(self):
-        xdg = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
-        if "kde" in xdg or "plasma" in xdg: return "kde"
-        if "gnome" in xdg: return "gnome"
-        return "kde"
+        title = Gtk.Label(label="Wybierz Styl")
+        title.add_css_class("title-1")
 
-    def load_css(self):
-        provider = Gtk.CssProvider()
-        css = b"""
-        .purple-btn { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; border-radius: 9999px; padding: 10px 40px; }
-        .purple-card { background-color: #313244; border-radius: 12px; padding: 20px; margin: 10px; }
-        .title-accent { color: #cba6f7; font-weight: 800; font-size: 20px; }
-        .violet-progress progress { background-color: #cba6f7; }
-        """
-        provider.load_from_data(css)
-        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        subtitle = Gtk.Label(label="Dostosuj wygląd środowiska KDE Plasma")
+        subtitle.add_css_class("body")
+        subtitle.get_style_context().add_class("dim-label")
 
-    def init_pages(self):
-        self.main_scroll = Gtk.ScrolledWindow()
-        self.main_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
-        self.main_container.set_margin_top(30)
-        self.main_container.set_margin_bottom(30)
-        self.main_container.set_margin_start(30)
-        self.main_container.set_margin_end(30)
+        header_box.append(icon)
+        header_box.append(title)
+        header_box.append(subtitle)
+        box.append(header_box)
 
-        title_label = Gtk.Label(label=f"Presety dla {self.current_de.upper()}")
-        title_label.add_css_class("title-1")
-        self.main_container.append(title_label)
+        # 2. LISTA PRESETÓW (ADW.PREFERENCESGROUP)
+        # To klucz do wyglądu - używamy natywnych grup Adwaita
+        self.preset_group = Adw.PreferencesGroup()
+        self.preset_group.set_title("Dostępne Presety")
 
-        self.build_preset_list()
+        for preset in PRESETS:
+            row = Adw.ActionRow()
+            row.set_title(preset["name"])
+            row.set_subtitle(preset["desc"])
+            row.set_icon_name(preset["icon"])
 
-        self.main_scroll.set_child(self.main_container)
-        self.stack.add_named(self.main_scroll, "presets")
+            # Przycisk "Zastosuj" w wierszu
+            btn = Gtk.Button(label="Zastosuj")
+            btn.add_css_class("pill") # Zaokrąglony
+            btn.add_css_class("suggested-action") # Niebieski akcent
+            btn.set_valign(Gtk.Align.CENTER)
+            btn.connect("clicked", self.on_apply_clicked, preset)
 
-        self.page_progress = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=30)
-        self.page_progress.set_valign(Gtk.Align.CENTER)
-        self.page_progress.set_halign(Gtk.Align.CENTER)
+            row.add_suffix(btn)
+            self.preset_group.add(row)
 
-        self.pbar = Gtk.ProgressBar()
-        self.pbar.add_css_class("violet-progress")
-        self.pbar.set_size_request(400, 20)
-        self.lbl_stat = Gtk.Label(label="Inicjalizacja...")
+        box.append(self.preset_group)
 
-        self.page_progress.append(self.pbar)
-        self.page_progress.append(self.lbl_stat)
-        self.stack.add_named(self.page_progress, "progress")
+        # SCROLL WINDOW (Żeby można było przewijać)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_child(clamp)
 
-        self.page_finish = Adw.StatusPage()
-        self.page_finish.set_title("Zastosowano!")
-        self.page_finish.set_icon_name("emblem-ok-symbolic")
-        self.page_finish.set_description("Wyloguj się i zaloguj ponownie, aby zobaczyć pełne efekty.")
+        # HEADER BAR (Pasek tytułu)
+        hb = Adw.HeaderBar()
+        hb.set_show_end_title_buttons(True)
 
-        btn = Gtk.Button(label="Wyloguj teraz")
-        btn.add_css_class("purple-btn")
-        btn.set_halign(Gtk.Align.CENTER)
-        btn.connect("clicked", self.logout)
-        self.page_finish.set_child(btn)
-        self.stack.add_named(self.page_finish, "finish")
+        root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        root_box.append(hb)
+        root_box.append(scroll)
 
-    def build_preset_list(self):
-        items = PRESETS.get(self.current_de, [])
-        self.radios = {}
-        first_radio = None
+        self.set_content(root_box)
 
-        for item in items:
-            card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=20)
-            card.add_css_class("purple-card")
+    def on_apply_clicked(self, btn, preset):
+        self.ask_password(preset)
 
-            v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-            t = Gtk.Label(label=item["title"], xalign=0); t.add_css_class("title-accent")
-            d = Gtk.Label(label=item["desc"], xalign=0); d.add_css_class("body")
-            v.append(t); v.append(d)
-
-            radio = Gtk.CheckButton(group=first_radio)
-            if not first_radio: first_radio = radio
-            radio.set_valign(Gtk.Align.CENTER)
-
-            card.append(v)
-            img = Gtk.Image(); card.append(img); img.set_hexpand(True)
-            card.append(radio)
-
-            self.main_container.append(card)
-            self.radios[item["id"]] = (radio, item)
-
-        btn = Gtk.Button(label="Zastosuj Wybrany Styl")
-        btn.add_css_class("purple-btn")
-        btn.set_halign(Gtk.Align.CENTER)
-        btn.set_margin_top(20)
-        btn.connect("clicked", self.on_apply)
-
-        self.main_container.append(btn)
-
-    def on_apply(self, btn):
-        selected_data = None
-        for pid, (rad, data) in self.radios.items():
-            if rad.get_active():
-                selected_data = data
-                break
-        if selected_data: self.ask_password(selected_data)
-
-    def ask_password(self, data):
-        dialog = Adw.MessageDialog(transient_for=self, heading="Autoryzacja", body="Wymagane hasło sudo.")
-        dialog.add_response("ok", "Zatwierdź")
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    def ask_password(self, preset):
+        # Dialog hasła w stylu Adwaita
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         entry = Gtk.PasswordEntry()
-        entry.connect("activate", lambda w: dialog.response("ok"))
-        box.append(entry)
-        dialog.set_extra_child(box)
+        entry.set_placeholder_text("Hasło sudo")
+        body.append(Gtk.Label(label="Wymagane uprawnienia administratora."))
+        body.append(entry)
 
-        def on_res(d, r):
-            pwd = entry.get_text()
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading=f"Instalacja: {preset['name']}",
+        )
+        dialog.set_extra_child(body)
+        dialog.add_response("cancel", "Anuluj")
+        dialog.add_response("apply", "Zatwierdź")
+        dialog.set_response_appearance("apply", Adw.ResponseAppearance.SUGGESTED)
+
+        # Callback dla odpowiedzi
+        def response_cb(d, response):
+            if response == "apply":
+                pwd = entry.get_text()
+                self.show_progress(pwd, preset)
             d.close()
-            self.stack.set_visible_child_name("progress")
-            ThemeWorker(pwd, self.current_de, data, self.update_p, self.finish).start()
 
-        dialog.connect("response", on_res)
+        dialog.connect("response", response_cb)
         dialog.present()
 
-    def update_p(self, pct, txt):
-        GLib.idle_add(lambda: (self.pbar.set_fraction(pct/100), self.lbl_stat.set_text(txt)))
+    def show_progress(self, password, preset):
+        # Tworzymy okno postępu (Modal)
+        self.prog_win = Adw.Window(transient_for=self)
+        self.prog_win.set_default_size(400, 300)
+        self.prog_win.set_modal(True)
+        self.prog_win.set_title("Przetwarzanie...")
 
-    def finish(self):
-        self.stack.set_visible_child_name("finish")
+        content = Adw.StatusPage()
+        content.set_title("Proszę czekać")
+        content.set_description("Trwa pobieranie i konfiguracja...")
+        content.set_icon_name("system-software-install-symbolic")
 
-    def logout(self, btn):
-        subprocess.run(["qdbus", "org.kde.ksmserver", "/KSMServer", "logout", "0", "0", "0"])
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        box.set_halign(Gtk.Align.CENTER)
 
-class ThemeApp(Adw.Application):
-    def __init__(self): super().__init__(application_id="com.arch.presets", flags=Gio.ApplicationFlags.FLAGS_NONE)
+        self.pbar = Gtk.ProgressBar()
+        self.pbar.set_size_request(300, -1)
+        self.lbl_status = Gtk.Label(label="Inicjalizacja...")
+
+        box.append(self.pbar)
+        box.append(self.lbl_status)
+
+        # Hack żeby dodać box do StatusPage (używając set_child)
+        content.set_child(box)
+        self.prog_win.set_content(content)
+        self.prog_win.present()
+
+        # Start Workera
+        ApplyWorker(password, preset, self.update_progress, self.finish_progress).start()
+
+    def update_progress(self, pct, text):
+        GLib.idle_add(lambda: (self.pbar.set_fraction(pct/100), self.lbl_status.set_text(text)))
+
+    def finish_progress(self):
+        # Zamknij okno postępu i pokaż info o sukcesie
+        self.prog_win.close()
+
+        toast = Adw.Toast.new("Gotowe! Wyloguj się, aby zobaczyć zmiany.")
+        self.add_toast(toast)
+
+class PresetsApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="com.arch.presets", flags=Gio.ApplicationFlags.FLAGS_NONE)
+
     def do_activate(self):
         win = self.props.active_window
-        if not win: win = ThemeAppWindow(self)
+        if not win: win = MainWindow(self)
         win.present()
 
 if __name__ == "__main__":
-    app = ThemeApp()
+    app = PresetsApp()
     app.run(sys.argv)

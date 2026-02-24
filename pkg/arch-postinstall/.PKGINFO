@@ -6,9 +6,9 @@ xdata = pkgtype=pkg
 pkgver = 2.4-1
 pkgdesc = Arch Linux Post-Install Wizard & Presets
 url = https://github.com/zcharka/arch-postinstall
-builddate = 1771946449
+builddate = 1771946826
 packager = Unknown Packager
-size = 31331
+size = 41564
 arch = any
 license = GPL
 depend = python
