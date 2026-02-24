@@ -1,5 +1,5 @@
 # Maintainer: Sebastian <twoj@email.com>
-pkgname=arch-postinstall
+pkgname=RatInstall
 pkgver=2.4
 pkgrel=1
 pkgdesc="Arch Linux Post-Install Wizard & Presets"
