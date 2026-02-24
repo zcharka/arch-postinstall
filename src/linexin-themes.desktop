@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Linexin Theme Manager
+Comment=Zmień wygląd systemu (GNOME/KDE)
+Exec=linexin-themes
+Icon=preferences-desktop-theme
+Terminal=false
+Type=Application
+Categories=Settings;GTK;
+Keywords=theme;look;feel;style;
