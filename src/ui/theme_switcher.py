@@ -32,10 +32,10 @@ PRESETS = [
     {
         "id": "clean",
         "name": "Czysta Plasma",
-        "desc": "Przywraca domyślny wygląd Arch Linux.",
+        "desc": "Przywraca domyślny wygląd Arch Linux (Breeze).",
         "icon": "edit-delete-symbolic",
         "pkgs": [],
-        "script": "none"
+        "script": "clean" # Zmieniono z 'none' na 'clean'
     }
 ]
 
@@ -91,18 +91,43 @@ class ApplyWorker(threading.Thread):
         subprocess.run(f"echo '{self.password}' | sudo -S {cmd}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def run_yay(self, pkg):
-        self.run_sudo("ls")
-        subprocess.run(f"yay -S {pkg} --noconfirm --answerdiff None --answerclean None", shell=True)
+        self.run_sudo("ls") # Odśwież token sudo
+        # POPRAWKA YAY: Używamy --answerdiff=None i --answerclean=All z '='
+        cmd = f"yay -S {pkg} --noconfirm --answerdiff=None --answerclean=All"
+        subprocess.run(cmd, shell=True)
 
-    def apply_js_layout(self, script_content):
+    def apply_js_layout(self, script_content, reset_theme=False):
         os.makedirs(os.path.expanduser("~/.config/autostart"), exist_ok=True)
         spath = "/tmp/layout.js"
         with open(spath, "w") as f: f.write(script_content)
 
+        # Komendy do wykonania
+        cmds = []
+        cmds.append(f"sleep 5")
+
+        if reset_theme:
+            # RESET DO CZYSTEJ PLASMY
+            cmds.append("lookandfeeltool -a org.kde.breeze.desktop") # Motyw Breeze
+            cmds.append("kwriteconfig6 --file kwinrc --group Plugins --key betterblurEnabled false")
+            cmds.append("kwriteconfig6 --file kwinrc --group Plugins --key roundedcornersEnabled false")
+        else:
+            # LAYAN
+            cmds.append("lookandfeeltool -a com.github.vinceliuice.Layan")
+            cmds.append("kwriteconfig6 --file kwinrc --group Plugins --key betterblurEnabled true")
+            cmds.append("kwriteconfig6 --file kwinrc --group Plugins --key roundedcornersEnabled true")
+
+        # Aplikowanie paneli
+        cmds.append(f'qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$(cat {spath})"')
+
+        # Sprzątanie
+        cmds.append("rm ~/.config/autostart/theme_apply.desktop")
+
+        full_cmd = "; ".join(cmds)
+
         desktop = f"""[Desktop Entry]
 Type=Application
 Name=ThemeApply
-Exec=sh -c 'sleep 5; qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$(cat {spath})"; lookandfeeltool -a com.github.vinceliuice.Layan; kwriteconfig6 --file kwinrc --group Plugins --key betterblurEnabled true; kwriteconfig6 --file kwinrc --group Plugins --key roundedcornersEnabled true; rm ~/.config/autostart/theme_apply.desktop'
+Exec=sh -c '{full_cmd}'
 X-KDE-autostart-after=panel
 """
         with open(os.path.expanduser("~/.config/autostart/theme_apply.desktop"), "w") as f:
@@ -112,15 +137,22 @@ X-KDE-autostart-after=panel
         pkgs = self.preset["pkgs"]
         total = len(pkgs) + 2
 
-        for i, pkg in enumerate(pkgs):
-            self.on_progress(int((i/total)*100), f"Instalowanie: {pkg}...")
-            self.run_yay(pkg)
+        # 1. Instalacja
+        if pkgs:
+            for i, pkg in enumerate(pkgs):
+                self.on_progress(int((i/total)*100), f"Instalowanie: {pkg}...")
+                self.run_yay(pkg)
 
+        # 2. Konfiguracja
         self.on_progress(90, "Konfiguracja KDE Plasma...")
+
         if self.preset["script"] == "dock":
-            self.apply_js_layout(JS_DOCK)
+            self.apply_js_layout(JS_DOCK, reset_theme=False)
         elif self.preset["script"] == "standard":
-            self.apply_js_layout(JS_STD)
+            self.apply_js_layout(JS_STD, reset_theme=False)
+        elif self.preset["script"] == "clean":
+            # Dla czystej plasmy używamy standardowego układu ale z flagą resetu motywu
+            self.apply_js_layout(JS_STD, reset_theme=True)
 
         self.on_progress(100, "Gotowe!")
         GLib.idle_add(self.on_finish)
@@ -131,16 +163,20 @@ X-KDE-autostart-after=panel
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        # Tutaj ustawiamy tytuł okna
         super().__init__(application=app, title="RatPresets")
         self.set_default_size(800, 600)
 
         manager = Adw.StyleManager.get_default()
         manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
+        # --- NAPRAWA TOASTÓW: Overlay ---
+        self.toast_overlay = Adw.ToastOverlay()
+        self.set_content(self.toast_overlay) # Overlay jest głównym kontenerem okna
+
         page = Adw.PreferencesPage()
         page.set_title("Wybierz Styl")
         page.set_icon_name("preferences-desktop-theme")
+        self.toast_overlay.set_child(page) # Strona jest dzieckiem Overlay
 
         group = Adw.PreferencesGroup()
         group.set_title("Dostępne Presety")
@@ -164,7 +200,6 @@ class MainWindow(Adw.ApplicationWindow):
             group.add(row)
 
         page.add(group)
-        self.set_content(page)
 
     def on_apply_clicked(self, btn, preset):
         self.ask_password(preset)
@@ -173,7 +208,6 @@ class MainWindow(Adw.ApplicationWindow):
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
 
         entry = Gtk.PasswordEntry()
-        # Poprawka placeholder-text
         entry.set_property("placeholder-text", "Hasło sudo")
 
         body.append(Gtk.Label(label="Wymagane uprawnienia administratora."))
@@ -229,12 +263,12 @@ class MainWindow(Adw.ApplicationWindow):
 
     def finish_progress(self):
         self.prog_win.close()
+        # --- NAPRAWA TOASTÓW: Używamy overlay ---
         toast = Adw.Toast.new("Gotowe! Wyloguj się, aby zobaczyć zmiany.")
-        self.add_toast(toast)
+        self.toast_overlay.add_toast(toast)
 
 class RatPresetsApp(Adw.Application):
     def __init__(self):
-        # TU BYŁ BŁĄD: Adw.Application przyjmuje application_id, a nie application=app
         super().__init__(application_id="com.rat.presets", flags=Gio.ApplicationFlags.FLAGS_NONE)
 
     def do_activate(self):

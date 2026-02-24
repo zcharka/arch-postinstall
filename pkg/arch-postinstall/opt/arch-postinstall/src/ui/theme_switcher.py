@@ -126,12 +126,13 @@ X-KDE-autostart-after=panel
         GLib.idle_add(self.on_finish)
 
 # ==============================================================================
-# 🎨 GUI
+# 🎨 GUI (RAT PRESETS)
 # ==============================================================================
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Presets")
+        # Tutaj ustawiamy tytuł okna
+        super().__init__(application=app, title="RatPresets")
         self.set_default_size(800, 600)
 
         manager = Adw.StyleManager.get_default()
@@ -172,8 +173,7 @@ class MainWindow(Adw.ApplicationWindow):
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
 
         entry = Gtk.PasswordEntry()
-        # --- NAPRAWA BŁĘDU ---
-        # Zamiast entry.set_placeholder_text używamy set_property
+        # Poprawka placeholder-text
         entry.set_property("placeholder-text", "Hasło sudo")
 
         body.append(Gtk.Label(label="Wymagane uprawnienia administratora."))
@@ -232,9 +232,10 @@ class MainWindow(Adw.ApplicationWindow):
         toast = Adw.Toast.new("Gotowe! Wyloguj się, aby zobaczyć zmiany.")
         self.add_toast(toast)
 
-class PresetsApp(Adw.Application):
+class RatPresetsApp(Adw.Application):
     def __init__(self):
-        super().__init__(application=app, title="Presets") # ZMIENIONO NAZWĘ APLIKACJI
+        # TU BYŁ BŁĄD: Adw.Application przyjmuje application_id, a nie application=app
+        super().__init__(application_id="com.rat.presets", flags=Gio.ApplicationFlags.FLAGS_NONE)
 
     def do_activate(self):
         win = self.props.active_window
@@ -242,5 +243,5 @@ class PresetsApp(Adw.Application):
         win.present()
 
 if __name__ == "__main__":
-    app = PresetsApp()
+    app = RatPresetsApp()
     app.run(sys.argv)
