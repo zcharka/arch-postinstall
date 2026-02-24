@@ -3,6 +3,7 @@ import os
 import subprocess
 import threading
 import urllib.request
+import time
 import gi
 
 gi.require_version('Gtk', '4.0')
@@ -10,51 +11,84 @@ gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Gio, Gdk
 
 # ==============================================================================
-# 🔧 KONFIGURACJA - EDYTUJ TE LISTY
+# 🔧 KONFIGURACJA
 # ==============================================================================
 
-# Źródła: "flatpak", "aur", "pacman"
 SOFTWARE_LIST = [
-    # Przeglądarki
     {"name": "Firefox",          "pkg": "org.mozilla.firefox",         "source": "flatpak", "checked": True},
-    {"name": "Zen Browser",      "pkg": "io.github.zen_browser.zen",   "source": "flatpak", "checked": False},
-
-    # Narzędzia
     {"name": "Visual Studio Code", "pkg": "com.visualstudio.code",     "source": "flatpak", "checked": True},
-    {"name": "Prism Launcher",   "pkg": "org.prismlauncher.PrismLauncher", "source": "flatpak", "checked": False},
-    {"name": "Steam",            "pkg": "com.valvesoftware.Steam",     "source": "flatpak", "checked": False},
     {"name": "Discord",          "pkg": "com.discordapp.Discord",      "source": "flatpak", "checked": True},
-    {"name": "OBS Studio",       "pkg": "com.obsproject.Studio",       "source": "flatpak", "checked": False},
-    {"name": "AnyDesk",          "pkg": "com.anydesk.Anydesk",         "source": "flatpak", "checked": False},
-
-    # WYJĄTEK (AUR)
+    {"name": "Steam",            "pkg": "com.valvesoftware.Steam",     "source": "flatpak", "checked": False},
     {"name": "DaVinci Resolve",  "pkg": "davinci-resolve",             "source": "aur",     "checked": False},
 ]
 
-# Środowiska graficzne
+# Lista podstawowych środowisk
 DE_LIST = [
-    {"name": "KDE Plasma (Full)", "pkg": "plasma-meta",       "source": "pacman"},
-    {"name": "GNOME (Full)",      "pkg": "gnome",             "source": "pacman"},
-    {"name": "Cinnamon",          "pkg": "cinnamon",          "source": "pacman"},
-    {"name": "i3 Window Manager", "pkg": "i3-wm",             "source": "pacman"},
+    {"name": "KDE Plasma 6",      "pkg": "plasma-meta",       "id": "kde"},
+    {"name": "GNOME",             "pkg": "gnome",             "id": "gnome"},
+    {"name": "Hyperland",         "pkg": "hyprland",          "id": "hypr"},
 ]
 
 # ==============================================================================
-# 🧠 LOGIKA INSTALACJI (BACKEND)
+# 🔮 SKRYPTY KONFIGURACYJNE KDE (JavaScript)
+# ==============================================================================
+
+JS_LAYOUT_DOCK = """
+var allPanels = panels();
+for (var i = 0; i < allPanels.length; i++) {
+    allPanels[i].remove();
+}
+var topPanel = new Panel();
+topPanel.location = "top";
+topPanel.height = 30;
+topPanel.addWidget("org.kde.plasma.kickoff");
+topPanel.addWidget("org.kde.plasma.pager");
+topPanel.addWidget("org.kde.plasma.panelspacer");
+topPanel.addWidget("org.kde.plasma.clock");
+topPanel.addWidget("org.kde.plasma.systemtray");
+
+var bottomPanel = new Panel();
+bottomPanel.location = "bottom";
+bottomPanel.height = 48;
+bottomPanel.offset = 0;
+bottomPanel.lengthMode = "fit";
+bottomPanel.hiding = "dodgewindows";
+bottomPanel.floating = true;
+bottomPanel.addWidget("org.kde.plasma.icontasks");
+"""
+
+JS_LAYOUT_STANDARD = """
+var allPanels = panels();
+for (var i = 0; i < allPanels.length; i++) {
+    allPanels[i].remove();
+}
+var panel = new Panel();
+panel.location = "bottom";
+panel.height = 44;
+panel.addWidget("org.kde.plasma.kickoff");
+panel.addWidget("org.kde.plasma.pager");
+panel.addWidget("org.kde.plasma.icontasks");
+panel.addWidget("org.kde.plasma.panelspacer");
+panel.addWidget("org.kde.plasma.systemtray");
+panel.addWidget("org.kde.plasma.clock");
+"""
+
+# ==============================================================================
+# 🧠 BACKEND (INSTALATOR)
 # ==============================================================================
 
 class InstallWorker(threading.Thread):
-    def __init__(self, password, queue, on_progress, on_finish):
+    def __init__(self, password, queue, preset, on_progress, on_finish):
         super().__init__()
         self.password = password
         self.queue = queue
+        self.preset = preset
         self.on_progress = on_progress
         self.on_finish = on_finish
         self.daemon = True
-        self.total_steps = len(queue) + 3
+        self.total_steps = len(queue) + 6
 
     def run_cmd(self, cmd_list, use_shell=False):
-        """Uruchamia komendę z sudo"""
         if cmd_list[0] == "sudo":
             cmd_str = " ".join(cmd_list).replace("sudo", "sudo -S")
             full_cmd = f"echo '{self.password}' | {cmd_str}"
@@ -63,90 +97,97 @@ class InstallWorker(threading.Thread):
             full_cmd = cmd_list
 
         try:
-            subprocess.run(
-                full_cmd,
-                shell=use_shell,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE
-            )
+            subprocess.run(full_cmd, shell=use_shell, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             return True
-        except subprocess.CalledProcessError as e:
-            print(f"Błąd komendy: {full_cmd}")
+        except subprocess.CalledProcessError:
             return False
 
-    def setup_flatpak(self):
-        """Instaluje flatpak i dodaje repozytorium Flathub"""
-        if not self.run_cmd(["sudo", "pacman", "-S", "flatpak", "--noconfirm", "--needed"]):
-            return False
-        cmd = ["sudo", "flatpak", "remote-add", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"]
-        return self.run_cmd(cmd)
-
-    def install_pkg(self, pkg_info):
-        """Rozdziela instalację na Pacman / Yay / Flatpak"""
-        pkg = pkg_info['pkg']
-        source = pkg_info.get('source', 'pacman')
-
+    def install_pkg_string(self, source, pkg_name):
         if source == "flatpak":
-            cmd = ["sudo", "flatpak", "install", "flathub", pkg, "-y"]
+            return self.run_cmd(["sudo", "flatpak", "install", "flathub", pkg_name, "-y"])
         elif source == "aur":
-            cmd = ["yay", "-S", pkg, "--noconfirm", "--answerdiff", "None", "--answerclean", "None"]
+            return self.run_cmd(["yay", "-S", pkg_name, "--noconfirm", "--answerdiff", "None", "--answerclean", "None"])
         else:
-            cmd = ["sudo", "pacman", "-S", pkg, "--noconfirm", "--needed"]
+            return self.run_cmd(["sudo", "pacman", "-S", pkg_name, "--noconfirm", "--needed"])
 
-        return self.run_cmd(cmd)
+    def configure_kde_preset(self):
+        if self.preset == "clean":
+            return
+
+        self.on_progress(90, "Pobieranie motywów (Layan, Bibata)...")
+        themes = [
+            "layan-kde-git",
+            "bibata-cursor-theme-bin",
+            "kwin-effects-better-blur-dx-git",
+            "kwin-effect-rounded-corners-git"
+        ]
+        for theme in themes:
+            self.install_pkg_string("aur", theme)
+
+        self.on_progress(95, "Aplikowanie ustawień wyglądu...")
+
+        js_script = JS_LAYOUT_DOCK if self.preset == "dock" else JS_LAYOUT_STANDARD
+
+        script_path = "/tmp/plasma_layout.js"
+        with open(script_path, "w") as f:
+            f.write(js_script)
+
+        autostart_dir = os.path.expanduser("~/.config/autostart")
+        os.makedirs(autostart_dir, exist_ok=True)
+
+        setup_script = f"""[Desktop Entry]
+Type=Application
+Name=Arch Setup Theme
+Exec=sh -c 'qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$(cat {script_path})"; kwriteconfig6 --file kwinrc --group Plugins --key betterblurEnabled true; kwriteconfig6 --file kwinrc --group Plugins --key roundedcornersEnabled true; lookandfeeltool -a com.github.vinceliuice.Layan; rm ~/.config/autostart/arch_setup_theme.desktop'
+X-KDE-autostart-after=panel
+"""
+        with open(f"{autostart_dir}/arch_setup_theme.desktop", "w") as f:
+            f.write(setup_script)
+
+        try:
+            subprocess.run(["kwriteconfig6", "--file", "kwinrc", "--group", "Plugins", "--key", "betterblurEnabled", "true"])
+            subprocess.run(["kwriteconfig6", "--file", "kwinrc", "--group", "Plugins", "--key", "roundedcornersEnabled", "true"])
+        except: pass
 
     def run(self):
         current_step = 0
 
-        self.on_progress(0, "Aktualizacja repozytoriów (Pacman)...")
+        self.on_progress(5, "Aktualizacja systemu...")
         self.run_cmd(["sudo", "pacman", "-Sy"])
-        current_step += 1
+        self.run_cmd(["sudo", "pacman", "-S", "git", "base-devel", "flatpak", "--noconfirm", "--needed"])
 
-        self.on_progress(10, "Przygotowanie AUR (Git, Base-devel)...")
-        self.run_cmd(["sudo", "pacman", "-S", "git", "base-devel", "--noconfirm", "--needed"])
-        current_step += 1
+        cmd = ["sudo", "flatpak", "remote-add", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"]
+        self.run_cmd(cmd)
 
-        self.on_progress(15, "Konfiguracja Flatpak i Flathub...")
-        if not self.setup_flatpak():
-            print("Nie udało się skonfigurować Flatpaka!")
-        current_step += 1
-
-        success = True
         for item in self.queue:
-            percent = int((current_step / self.total_steps) * 100)
-            source_name = item.get('source', 'pacman').upper()
-            self.on_progress(percent, f"Instalowanie [{source_name}]: {item['name']}...")
-
-            if not self.install_pkg(item):
-                print(f"Błąd instalacji: {item['name']}")
-                success = False
-
+            percent = int((current_step / self.total_steps) * 80) + 10
+            self.on_progress(percent, f"Instalacja: {item['name']}...")
+            self.install_pkg_string(item.get('source', 'pacman'), item['pkg'])
             current_step += 1
 
+        if self.preset != "clean":
+            self.configure_kde_preset()
+
         self.on_progress(100, "Finalizowanie...")
-        GLib.idle_add(self.on_finish, success)
+        GLib.idle_add(self.on_finish, True)
 
 # ==============================================================================
-# 🎨 INTERFEJS UŻYTKOWNIKA (GUI)
+# 🎨 GUI
 # ==============================================================================
 
 class InstallerWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Arch Setup")
-        self.set_default_size(900, 650)
+        self.set_default_size(950, 700)
 
-        # WYMUSZENIE CIEMNEGO MOTYWU (Naprawia Warning)
         manager = Adw.StyleManager.get_default()
         manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
-
         self.load_css()
 
-        self.selected_software = []
-        self.selected_de = []
+        self.selected_preset = "clean"
+        self.is_kde_selected = False
 
         self.stack = Adw.ViewStack()
-
         self.header = Adw.HeaderBar()
         self.header.set_show_end_title_buttons(True)
         self.header.set_show_start_title_buttons(False)
@@ -156,278 +197,253 @@ class InstallerWindow(Adw.ApplicationWindow):
         main_box.append(self.stack)
         self.set_content(main_box)
 
-        self.init_welcome_page()
-        self.init_software_page()
-        self.init_de_page()
-        self.init_progress_page()
-        self.init_finish_page()
+        self.init_welcome()
+        self.init_soft()
+        self.init_de()
+        self.init_presets()
+        self.init_progress()
+        self.init_finish()
 
     def load_css(self):
         provider = Gtk.CssProvider()
         css = b"""
-        .blue-btn {
-            background-color: #3584e4;
-            color: white;
-            font-weight: bold;
-            border-radius: 9999px;
-            padding: 10px 40px;
-        }
-        .blue-btn:hover { background-color: #1c71d8; }
-
-        .purple-btn {
-            background-color: #cba6f7;
-            color: #1e1e2e;
-            font-weight: bold;
-            border-radius: 9999px;
-            padding: 10px 40px;
-        }
-        .purple-btn:hover { background-color: #b492e0; }
-
-        .violet-progress progress {
-            background-color: #cba6f7;
-            border-radius: 6px;
-            min-height: 12px;
-        }
-        .violet-progress trough {
-            background-color: #313244;
-            border-radius: 6px;
-            min-height: 12px;
-        }
+        .blue-btn { background-color: #3584e4; color: white; font-weight: bold; border-radius: 9999px; padding: 10px 40px; }
+        .purple-btn { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; border-radius: 9999px; padding: 10px 40px; }
+        .purple-card { background-color: #313244; border-radius: 12px; padding: 20px; margin: 10px; }
+        .preset-title { font-size: 18px; font-weight: bold; color: #cba6f7; }
+        .violet-progress progress { background-color: #cba6f7; border-radius: 6px; min-height: 12px; }
+        .violet-progress trough { background-color: #313244; border-radius: 6px; min-height: 12px; }
         """
         provider.load_from_data(css)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    def get_arch_logo(self):
-        path = "/tmp/arch_logo.svg"
-        if not os.path.exists(path):
-            try:
-                urllib.request.urlretrieve("https://archlinux.org/static/logos/archlinux-logo-dark-scalable.518881f04ca9.svg", path)
-            except: pass
-
-        if os.path.exists(path):
-            return Gdk.Texture.new_from_file(Gio.File.new_for_path(path))
-        return None
-
-    # --- STRONA 1: POWITANIE ---
-    def init_welcome_page(self):
+    # --- STRONY ---
+    def init_welcome(self):
         page = Adw.StatusPage()
         page.set_title("Witaj w Instalatorze")
-        page.set_description("Skonfiguruj swój system Arch Linux krok po kroku.")
-
-        logo = self.get_arch_logo()
-        if logo: page.set_paintable(logo)
-        else: page.set_icon_name("system-software-install-symbolic")
+        page.set_description("Wybierz aplikacje, środowisko i styl.")
+        page.set_icon_name("system-software-install-symbolic")
 
         btn = Gtk.Button(label="Rozpocznij")
         btn.add_css_class("blue-btn")
         btn.set_halign(Gtk.Align.CENTER)
         btn.connect("clicked", lambda x: self.stack.set_visible_child_name("software"))
-
         page.set_child(btn)
         self.stack.add_named(page, "welcome")
 
-    # --- STRONA 2: WYBÓR SOFTU ---
-    def init_software_page(self):
+    def init_soft(self):
         page = Adw.PreferencesPage()
-        page.set_title("Wybór Oprogramowania")
-
-        group = Adw.PreferencesGroup(title="Aplikacje (Flatpak i AUR)")
-
+        page.set_title("Aplikacje")
+        group = Adw.PreferencesGroup(title="Wybierz programy")
         self.soft_checks = {}
-
         for item in SOFTWARE_LIST:
-            src_label = item.get('source', 'pacman').upper()
-            row = Adw.ActionRow(title=item['name'], subtitle=f"Źródło: {src_label} ({item['pkg']})")
-
+            row = Adw.ActionRow(title=item['name'], subtitle=item['pkg'])
             check = Gtk.CheckButton()
             check.set_active(item['checked'])
             check.set_valign(Gtk.Align.CENTER)
-
             row.add_suffix(check)
-            row.set_activatable_widget(check)
-
             group.add(row)
             self.soft_checks[item['pkg']] = (check, item)
-
         page.add(group)
-
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        btn_box.set_halign(Gtk.Align.CENTER)
-        btn_box.set_margin_top(20)
-        btn_box.set_margin_bottom(20)
 
         btn = Gtk.Button(label="Dalej")
         btn.add_css_class("blue-btn")
+        btn.set_halign(Gtk.Align.CENTER)
+        btn.set_margin_top(20)
         btn.connect("clicked", lambda x: self.stack.set_visible_child_name("desktop"))
 
-        btn_box.append(btn)
-
-        btn_group = Adw.PreferencesGroup()
-        btn_group.add(btn_box)
-        page.add(btn_group)
-
+        grp = Adw.PreferencesGroup(); grp.add(btn); page.add(grp)
         self.stack.add_named(page, "software")
 
-    # --- STRONA 3: WYBÓR DE ---
-    def init_de_page(self):
+    def init_de(self):
         page = Adw.PreferencesPage()
-        page.set_title("Środowisko Graficzne")
-
-        group = Adw.PreferencesGroup(title="Środowisko Pulpitu")
-
-        self.de_checks = {}
+        page.set_title("Środowisko")
+        group = Adw.PreferencesGroup(title="Wybierz pulpit")
+        self.de_radios = {}
+        first_radio = None
 
         for item in DE_LIST:
             row = Adw.ActionRow(title=item['name'])
-            check = Gtk.CheckButton()
-            check.set_valign(Gtk.Align.CENTER)
+            radio = Gtk.CheckButton(group=first_radio)
+            if not first_radio: first_radio = radio
+            radio.set_valign(Gtk.Align.CENTER)
+            radio.connect("toggled", self.on_de_toggled, item['id'])
 
-            row.add_suffix(check)
-            row.set_activatable_widget(check)
-
+            row.add_suffix(radio)
+            row.set_activatable_widget(radio)
             group.add(row)
-            self.de_checks[item['pkg']] = (check, item)
+            self.de_radios[item['id']] = (radio, item)
 
         page.add(group)
 
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        btn_box.set_halign(Gtk.Align.CENTER)
-        btn_box.set_margin_top(20)
-
-        btn = Gtk.Button(label="Zainstaluj")
+        btn = Gtk.Button(label="Dalej")
         btn.add_css_class("blue-btn")
-        btn.connect("clicked", self.on_install_clicked)
+        btn.set_halign(Gtk.Align.CENTER)
+        btn.set_margin_top(20)
+        btn.connect("clicked", self.go_to_presets_or_install)
 
-        btn_box.append(btn)
-
-        btn_group = Adw.PreferencesGroup()
-        btn_group.add(btn_box)
-        page.add(btn_group)
-
+        grp = Adw.PreferencesGroup(); grp.add(btn); page.add(grp)
         self.stack.add_named(page, "desktop")
 
-    # --- STRONA 4: PROGRESS ---
-    def init_progress_page(self):
+    def on_de_toggled(self, widget, de_id):
+        if widget.get_active() and de_id == "kde":
+            self.is_kde_selected = True
+        elif widget.get_active():
+            self.is_kde_selected = False
+
+    def go_to_presets_or_install(self, btn):
+        if self.is_kde_selected:
+            self.stack.set_visible_child_name("presets")
+        else:
+            self.on_install_clicked(btn)
+
+    # --- POPRAWIONA FUNKCJA PRESETÓW ---
+    def init_presets(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Styl KDE Plasma")
+
+        # Tworzymy grupę dla kart
+        group = Adw.PreferencesGroup(title="Wybierz wygląd")
+        page.add(group)
+
+        self.preset_radios = {}
+        r_group = None
+
+        # PRESET 1
+        p1 = self.create_preset_card("✨ Layan Dock (Twój styl)", "Pasek na górze, pływający dock na dole.\nMotyw Layan, BetterBlur, Rounded Corners.", "dock", r_group)
+        r_group = p1[0]
+        group.add(p1[1]) # Dodajemy kartę do grupy
+        self.preset_radios["dock"] = p1[0]
+
+        # PRESET 2
+        p2 = self.create_preset_card("🎨 Layan Standard", "Klasyczny pasek na dole.\nMotyw Layan + efekty.", "standard", r_group)
+        group.add(p2[1])
+        self.preset_radios["standard"] = p2[0]
+
+        # PRESET 3
+        p3 = self.create_preset_card("🧹 Czysta Plasma", "Domyślny wygląd Arch Linux.\nBez dodatków.", "clean", r_group)
+        group.add(p3[1])
+        self.preset_radios["clean"] = p3[0]
+
+        self.preset_radios["dock"].set_active(True)
+
+        # Button Group
+        btn_group = Adw.PreferencesGroup()
+        page.add(btn_group)
+
+        btn = Gtk.Button(label="Zainstaluj wszystko")
+        btn.add_css_class("purple-btn")
+        btn.set_halign(Gtk.Align.CENTER)
+        btn.set_margin_top(20)
+        btn.connect("clicked", self.on_install_clicked)
+
+        # Opakowanie dla przycisku
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        btn_box.set_halign(Gtk.Align.CENTER)
+        btn_box.append(btn)
+
+        btn_group.add(btn_box)
+
+        self.stack.add_named(page, "presets")
+
+    def create_preset_card(self, title, desc, id_name, group):
+        card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=20)
+        card.add_css_class("purple-card")
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        lbl_t = Gtk.Label(label=title, xalign=0); lbl_t.add_css_class("preset-title")
+        lbl_d = Gtk.Label(label=desc, xalign=0); lbl_d.add_css_class("caption")
+        vbox.append(lbl_t); vbox.append(lbl_d)
+
+        radio = Gtk.CheckButton(group=group)
+        radio.set_valign(Gtk.Align.CENTER)
+
+        card.append(vbox)
+        img = Gtk.Image(); card.append(img); img.set_hexpand(True)
+        card.append(radio)
+
+        return (radio, card)
+
+    def init_progress(self):
         self.page_progress = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=30)
         self.page_progress.set_valign(Gtk.Align.CENTER)
         self.page_progress.set_halign(Gtk.Align.CENTER)
-        self.page_progress.set_hexpand(True)
-        self.page_progress.set_vexpand(True)
 
+        # LOGO
         self.prog_logo = Gtk.Image()
         self.prog_logo.set_pixel_size(150)
-        texture = self.get_arch_logo()
-
-        # --- NAPRAWA BŁĘDU ---
-        if texture:
-            self.prog_logo.set_from_paintable(texture) # To była ta linijka!
-        else:
-            self.prog_logo.set_from_icon_name("system-software-install-symbolic")
+        path = "/tmp/arch_logo.svg"
+        if not os.path.exists(path):
+            try: urllib.request.urlretrieve("https://archlinux.org/static/logos/archlinux-logo-dark-scalable.518881f04ca9.svg", path)
+            except: pass
+        if os.path.exists(path): self.prog_logo.set_from_paintable(Gdk.Texture.new_from_file(Gio.File.new_for_path(path)))
+        else: self.prog_logo.set_from_icon_name("system-software-install-symbolic")
 
         self.progress_bar = Gtk.ProgressBar()
         self.progress_bar.add_css_class("violet-progress")
         self.progress_bar.set_size_request(400, 20)
 
-        self.progress_label = Gtk.Label(label="0%")
-        self.progress_label.add_css_class("title-2")
-
-        self.status_text = Gtk.Label(label="Inicjalizacja...")
-        self.status_text.add_css_class("caption")
+        self.lbl_status = Gtk.Label(label="Czekam...")
+        self.lbl_status.add_css_class("title-2")
 
         self.page_progress.append(self.prog_logo)
         self.page_progress.append(self.progress_bar)
-        self.page_progress.append(self.progress_label)
-        self.page_progress.append(self.status_text)
-
+        self.page_progress.append(self.lbl_status)
         self.stack.add_named(self.page_progress, "progress")
 
-    # --- STRONA 5: FINISH ---
-    def init_finish_page(self):
-        self.page_finish = Adw.StatusPage()
-        self.stack.add_named(self.page_finish, "finish")
+    def init_finish(self):
+        page = Adw.StatusPage()
+        page.set_title("Gotowe!")
+        page.set_icon_name("emblem-ok-symbolic")
 
-    # --- LOGIKA ---
+        btn = Gtk.Button(label="Restart")
+        btn.add_css_class("purple-btn")
+        btn.set_halign(Gtk.Align.CENTER)
+        btn.connect("clicked", lambda x: subprocess.run(["systemctl", "reboot"]))
+
+        page.set_child(btn)
+        self.stack.add_named(page, "finish")
+
     def on_install_clicked(self, btn):
-        install_queue = []
+        queue = []
+        for pkg, (chk, inf) in self.soft_checks.items():
+            if chk.get_active(): queue.append(inf)
+        for pid, (rad, inf) in self.de_radios.items():
+            if rad.get_active(): queue.append(inf)
 
-        for pkg, (check, info) in self.soft_checks.items():
-            if check.get_active():
-                install_queue.append(info)
+        preset = "clean"
+        if self.is_kde_selected:
+            if self.preset_radios["dock"].get_active(): preset = "dock"
+            elif self.preset_radios["standard"].get_active(): preset = "standard"
 
-        for pkg, (check, info) in self.de_checks.items():
-            if check.get_active():
-                install_queue.append(info)
+        self.ask_password(queue, preset)
 
-        self.ask_password(install_queue)
-
-    def ask_password(self, queue):
-        dialog = Adw.MessageDialog(transient_for=self, heading="Autoryzacja", body="Wymagane hasło sudo.")
-        dialog.add_response("cancel", "Anuluj")
+    def ask_password(self, queue, preset):
+        dialog = Adw.MessageDialog(transient_for=self, heading="Hasło", body="Wymagane sudo.")
         dialog.add_response("ok", "Instaluj")
-        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.pwd_entry = Gtk.PasswordEntry()
-        self.pwd_entry.set_property("placeholder-text", "Hasło")
-        self.pwd_entry.connect("activate", lambda w: dialog.response("ok"))
-        box.append(self.pwd_entry)
+        entry = Gtk.PasswordEntry()
+        entry.connect("activate", lambda w: dialog.response("ok"))
+        box.append(entry)
         dialog.set_extra_child(box)
 
-        dialog.connect("response", lambda d, r: self.start_install(d, r, queue))
+        def on_response(d, r):
+            if r == "ok":
+                pwd = entry.get_text()
+                d.close()
+                self.stack.set_visible_child_name("progress")
+                InstallWorker(pwd, queue, preset, self.update_prog, lambda x: self.stack.set_visible_child_name("finish")).start()
+            else: d.close()
+
+        dialog.connect("response", on_response)
         dialog.present()
 
-    def start_install(self, dialog, response, queue):
-        if response != "ok":
-            dialog.close()
-            return
-
-        pwd = self.pwd_entry.get_text()
-        dialog.close()
-
-        self.stack.set_visible_child_name("progress")
-
-        worker = InstallWorker(pwd, queue, self.update_progress, self.finish_install)
-        worker.start()
-
-    def update_progress(self, percent, text):
-        def _update():
-            self.progress_bar.set_fraction(percent / 100)
-            self.progress_label.set_text(f"{percent}%")
-            self.status_text.set_text(text)
-            return False
-        GLib.idle_add(_update)
-
-    def finish_install(self, success):
-        self.stack.set_visible_child_name("finish")
-
-        if success:
-            self.page_finish.set_title("Instalacja Ukończona")
-            self.page_finish.set_icon_name("emblem-ok-symbolic")
-            self.page_finish.set_description("Wszystkie pakiety zostały zainstalowane.")
-
-            btn = Gtk.Button(label="Uruchom ponownie")
-            btn.add_css_class("purple-btn")
-            btn.set_halign(Gtk.Align.CENTER)
-            btn.connect("clicked", self.reboot_system)
-            self.page_finish.set_child(btn)
-        else:
-            self.page_finish.set_title("Wystąpił Błąd")
-            self.page_finish.set_icon_name("dialog-error-symbolic")
-            self.page_finish.set_description("Sprawdź połączenie z internetem.")
-
-            btn = Gtk.Button(label="Zamknij program")
-            btn.add_css_class("purple-btn")
-            btn.set_halign(Gtk.Align.CENTER)
-            btn.connect("clicked", lambda x: self.close())
-            self.page_finish.set_child(btn)
-
-    def reboot_system(self, btn):
-        subprocess.run(["systemctl", "reboot"])
+    def update_prog(self, pct, txt):
+        GLib.idle_add(lambda: (self.progress_bar.set_fraction(pct/100), self.lbl_status.set_text(txt)))
 
 class InstallerApp(Adw.Application):
-    def __init__(self):
-        super().__init__(application_id="com.arch.wizard", flags=Gio.ApplicationFlags.FLAGS_NONE)
-
+    def __init__(self): super().__init__(application_id="com.arch.setup", flags=Gio.ApplicationFlags.FLAGS_NONE)
     def do_activate(self):
         win = self.props.active_window
         if not win: win = InstallerWindow(self)

@@ -3,12 +3,12 @@
 pkgname = arch-postinstall
 pkgbase = arch-postinstall
 xdata = pkgtype=pkg
-pkgver = 2.0-1
-pkgdesc = Arch Linux Post-Install Wizard (GTK4/Libadwaita)
+pkgver = 2.1-1
+pkgdesc = Arch Linux Post-Install Wizard & Theme Manager
 url = https://github.com/zcharka/arch-postinstall
-builddate = 1771945019
+builddate = 1771945801
 packager = Unknown Packager
-size = 27743
+size = 45771
 arch = any
 license = GPL
 depend = python

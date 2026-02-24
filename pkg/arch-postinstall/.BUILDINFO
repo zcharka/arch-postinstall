@@ -1,11 +1,11 @@
 format = 2
 pkgname = arch-postinstall
 pkgbase = arch-postinstall
-pkgver = 2.0-1
+pkgver = 2.1-1
 pkgarch = any
-pkgbuild_sha256sum = bdde9a39c05c6944b7814c0c62ba32f50545139fecd78daf2dd07f5f21193188
+pkgbuild_sha256sum = 3d93f5405ef31131a12b814a9da06506fb02a52e6c2a708e9bc05186f640958e
 packager = Unknown Packager
-builddate = 1771945019
+builddate = 1771945801
 builddir = /home/sebastian/Dokumenty/arch-postinstall
 startdir = /home/sebastian/Dokumenty/arch-postinstall
 buildtool = makepkg
