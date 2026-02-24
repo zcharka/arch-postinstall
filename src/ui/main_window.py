@@ -1,315 +1,1562 @@
-import sys
-import os
-import subprocess
-import time
+#!/usr/bin/env python3
 
-# --- 1. MAGICZNA SEKCJA: AUTO-INSTALACJA ZALEŻNOŚCI ---
-def install_dependencies():
-    """Sprawdza i instaluje PyQt6 oraz Requests na czystym Archu."""
-    try:
-        import PyQt6
-        import requests
-    except ImportError:
-        print("--- WYKRYTO BRAK BIBLIOTEK (PyQt6/Requests) ---")
-        print("--- Rozpoczynam automatyczną instalację... ---")
-        try:
-            subprocess.check_call(["sudo", "pacman", "-S", "--needed", "--noconfirm", "python-pyqt6", "python-requests"])
-            print("--- Zainstalowano pomyślnie! Restartowanie aplikacji... ---")
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        except subprocess.CalledProcessError as e:
-            print(f"BŁĄD INSTALACJI: {e}")
-            input("Naciśnij Enter, aby zamknąć...")
-            sys.exit(1)
-
-if not getattr(sys, 'frozen', False):
-    install_dependencies()
-
-# --- 2. NAPRAWA ŚCIEŻEK IMPORTU ---
-current_dir = os.path.dirname(os.path.abspath(__file__))
-src_dir = os.path.dirname(current_dir)
-project_root = os.path.dirname(src_dir)
-
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-if src_dir not in sys.path:
-    sys.path.insert(0, src_dir)
-
-# --- IMPORTY ---
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QPushButton, QLabel, QStackedWidget, QProgressBar,
-                             QTextEdit, QInputDialog, QLineEdit, QGraphicsDropShadowEffect)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QColor
-import requests
-
-# --- 3. IMPORT LOGIKI ---
-try:
-    from src.postinstall import plasma
-    BACKEND_LOADED = True
-except ImportError:
-    try:
-        from postinstall import plasma
-        BACKEND_LOADED = True
-    except ImportError as e:
-        print(f"CRITICAL ERROR: Nie znaleziono backendu: {e}")
-        BACKEND_LOADED = False
-        plasma = None
-
-# --- STYLE CSS (BEZPOŚREDNIO W PLIKU) ---
-STYLESHEET = """
-QMainWindow {
-    background-color: #1e1e2e;
-    color: #cdd6f4;
-}
-QWidget {
-    font-family: 'Segoe UI', sans-serif;
-    font-size: 14px;
-    color: #cdd6f4;
-}
-QLabel#Title {
-    font-size: 26px;
-    font-weight: bold;
-    color: #ffffff;
-    margin-bottom: 10px;
-}
-QLabel#SuccessLabel {
-    font-size: 28px;
-    font-weight: bold;
-    color: #a6e3a1;
-}
-QPushButton#PrimaryBtn {
-    background-color: #cba6f7;
-    color: #1e1e2e;
-    font-weight: bold;
-    font-size: 16px;
-    border-radius: 20px;
-    padding: 12px 30px;
-    border: none;
-}
-QPushButton#PrimaryBtn:hover { background-color: #d8b4fe; }
-QPushButton#PrimaryBtn:pressed { background-color: #b492e0; }
-QProgressBar {
-    background-color: #313244;
-    border-radius: 10px;
-    height: 12px;
-    text-align: center;
-    border: none;
-}
-QProgressBar::chunk {
-    background-color: #cba6f7;
-    border-radius: 10px;
-}
-QTextEdit {
-    background-color: #11111b;
-    color: #a6adc8;
-    border: 1px solid #313244;
-    border-radius: 12px;
-    padding: 10px;
-}
 """
+Widget Loader Application with Localization Support
+A GTK4/Libadwaita application that dynamically loads and displays widgets
+from a specified directory. Features a sidebar navigation with system-integrated
+window controls that respect GNOME settings and multi-language support.
+"""
+import gi
+import os
+import sys
+import importlib.util
+import traceback
+import locale
+import threading
+import subprocess
+import signal
+import argparse
+import re
+import tempfile
+import atexit
+from pathlib import Path
 
-# --- KLASA ROBOCZA ---
-class InstallWorker(QThread):
-    progress_signal = pyqtSignal(int)
-    log_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal()
-    error_signal = pyqtSignal(str)
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+gi.require_version('GdkPixbuf', '2.0')
+from gi.repository import Gtk, Adw, GLib, GdkPixbuf, Gio, GObject, Gdk
 
-    def __init__(self, password):
-        super().__init__()
-        self.password = password
+class SudoManager:
+    _instance = None
 
-    def run_cmd(self, command, use_shell=True):
-        if command.startswith("sudo"):
-            full_cmd = f"echo '{self.password}' | {command.replace('sudo', 'sudo -S')}"
-            use_shell = True
-        else:
-            full_cmd = command
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
 
-        self.log_signal.emit(f"$ {command}")
-
-        try:
-            process = subprocess.Popen(
-                full_cmd,
-                shell=use_shell,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
-            for line in process.stdout:
-                self.log_signal.emit(line.strip())
-            process.wait()
-            if process.returncode != 0:
-                self.log_signal.emit(f"[OSTRZEŻENIE] Kod wyjścia: {process.returncode}")
-        except Exception as e:
-            self.log_signal.emit(f"[BŁĄD] {e}")
-            raise e
-
-    def run(self):
-        try:
-            self.log_signal.emit("--- Rozpoczynam instalację ---")
-            self.progress_signal.emit(5)
-
-            if not BACKEND_LOADED:
-                self.error_signal.emit("BŁĄD KRYTYCZNY: Brak modułów src.postinstall!")
-                return
-
-            self.log_signal.emit("Aktualizacja repozytoriów...")
-            self.run_cmd("sudo pacman -Sy")
-            self.progress_signal.emit(15)
-
-            if plasma:
-                plasma.install_plasma_deps(self.run_cmd)
-                self.progress_signal.emit(50)
-                plasma.apply_custom_look(self.run_cmd)
-                self.progress_signal.emit(75)
-                plasma.apply_layout_preset(self.run_cmd)
-                self.progress_signal.emit(90)
-
-            self.progress_signal.emit(100)
-            self.finished_signal.emit()
-
-        except Exception as e:
-            self.error_signal.emit(str(e))
-
-# --- GŁÓWNE OKNO ---
-class ModernInstaller(QMainWindow):
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Arch Setup")
-        self.setFixedSize(500, 650)
-        self.setStyleSheet(STYLESHEET)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.user_password = None
+        self._running = True
+        self._askpass_tf = tempfile.NamedTemporaryFile(delete=False, prefix="linexin-askpass-")
+        self.askpass_script = self._askpass_tf.name
+        self._askpass_tf.close()
 
-        self.central_widget = QWidget()
-        self.central_widget.setObjectName("MainContainer")
-        self.central_widget.setStyleSheet("QWidget#MainContainer { background-color: #1e1e2e; border-radius: 15px; }")
+        self._sudo_tf = tempfile.NamedTemporaryFile(delete=False, prefix="linexin-sudo-")
+        self.wrapper_path = self._sudo_tf.name
+        self._sudo_tf.close()
 
-        self.setCentralWidget(self.central_widget)
-        self.main_layout = QVBoxLayout(self.central_widget)
-        self.main_layout.setContentsMargins(30, 30, 30, 30)
-
-        self.stack = QStackedWidget()
-        self.main_layout.addWidget(self.stack)
-
-        self.init_start_page()
-        self.init_install_page()
-        self.init_finish_page()
-
-    def get_arch_logo(self):
-        url = "https://upload.wikimedia.org/wikipedia/commons/thumb/7/74/Arch_Linux_logo.svg/1024px-Arch_Linux_logo.svg.png"
+        self.fifo_dir = tempfile.mkdtemp(prefix="linexin-pipe-")
+        self.fifo_path = os.path.join(self.fifo_dir, "password_pipe")
         try:
-            r = requests.get(url, timeout=2)
-            if r.status_code == 200:
-                pix = QPixmap()
-                pix.loadFromData(r.content)
-                return pix.scaled(120, 120, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            os.mkfifo(self.fifo_path, 0o600)
+        except FileExistsError:
+            pass
+
+        self._setup_scripts()
+
+        self._feed_condition = threading.Condition()
+        self._feeds_allowed = 0
+        self.feeder_thread = threading.Thread(target=self._feed_pipe_loop, daemon=True)
+        self.feeder_thread.start()
+
+        atexit.register(self.cleanup)
+
+    def _feed_pipe_loop(self):
+        """Thread that writes password to pipe only when authorized"""
+        while self._running:
+            with self._feed_condition:
+                self._feed_condition.wait_for(lambda: self._feeds_allowed > 0 or not self._running)
+
+            if not self._running:
+                break
+
+            if self.user_password:
+                try:
+                    # Open will block until a reader connects (sudo -A)
+                    fd = os.open(self.fifo_path, os.O_WRONLY)
+                    with os.fdopen(fd, 'w') as f:
+                        f.write(self.user_password + '\n')
+
+                    # Decrement allowed feeds after successful write
+                    with self._feed_condition:
+                        if self._feeds_allowed > 0:
+                            self._feeds_allowed -= 1
+                except OSError:
+                    pass
+                except Exception as e:
+                    print(f"Pipe error: {e}")
+            else:
+                # Consume token but write nothing/newline if no password
+                with self._feed_condition:
+                     if self._feeds_allowed > 0:
+                         self._feeds_allowed -= 1
+
+    def run_privileged(self, cmd, **kwargs):
+        """Run a command using the sudo wrapper with secure gating"""
+        if not self.user_password:
+            raise ValueError("No password set")
+
+        # --- AUTOMATYCZNE POMIJANIE ZAINSTALOWANYCH PAKIETÓW ---
+        try:
+            cmd_str = [str(c) for c in cmd]
+            is_installer = any(x.endswith('pacman') or x.endswith('yay') for x in cmd_str)
+
+            if is_installer:
+                # Sprawdź czy to instalacja (-S, -Sy, -Syu itp, ale nie -Ss czy -Q)
+                has_install_flag = any(x.startswith('-S') and 's' not in x and 'c' not in x for x in cmd_str)
+
+                if has_install_flag:
+                    if "--needed" not in cmd_str:
+                        # Szukamy miejsca po -S/Sy/Syu żeby wstawić --needed
+                        insert_idx = -1
+                        for i, arg in enumerate(cmd):
+                            if str(arg).startswith('-S'):
+                                insert_idx = i + 1
+                                break
+
+                        if insert_idx != -1:
+                            cmd.insert(insert_idx, "--needed")
+                            # Opcjonalnie: dodaj --noconfirm dla pełnego automatu
+                            if "--noconfirm" not in cmd_str:
+                                cmd.insert(insert_idx + 1, "--noconfirm")
+        except Exception as e:
+            print(f"Błąd modyfikacji komendy: {e}")
+        # -------------------------------------------------------
+
+        with self._feed_condition:
+            self._feeds_allowed += 1
+            self._feed_condition.notify_all()
+
+        try:
+            full_cmd = [self.wrapper_path] + cmd
+            return subprocess.run(full_cmd, **kwargs)
+        finally:
+            self._drain_pipe()
+
+    def start_privileged_session(self):
+        """Open the password gate for a long-running session"""
+        if not self.user_password:
+             return
+        with self._feed_condition:
+            self._feeds_allowed = 1000
+            self._feed_condition.notify_all()
+
+    def stop_privileged_session(self):
+        """Close the password gate"""
+        with self._feed_condition:
+            self._feeds_allowed = 0
+        self._drain_pipe()
+
+    def _drain_pipe(self):
+        """Helper to drain pipe if feed wasn't consumed"""
+        remaining = 0
+        with self._feed_condition:
+            remaining = self._feeds_allowed
+
+        if remaining > 0:
+            try:
+                fd = os.open(self.fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+                os.read(fd, 1024)
+                os.close(fd)
+            except Exception:
+                pass
+
+    def _setup_scripts(self):
+        with open(self.askpass_script, "w") as f:
+            f.write(f"#!/bin/sh\ncat \"{self.fifo_path}\"\n")
+        os.chmod(self.askpass_script, 0o700)
+
+        with open(self.wrapper_path, "w") as f:
+            f.write(f"#!/bin/sh\nexport SUDO_ASKPASS='{self.askpass_script}'\nexec sudo -A \"$@\"\n")
+        os.chmod(self.wrapper_path, 0o700)
+
+    def validate_password(self, password):
+        """Validate password using sudo -S -v"""
+        if not password:
+            return False
+        try:
+            subprocess.run(['sudo', '-k'], check=False)
+            result = subprocess.run(
+                ['sudo', '-S', '-v'],
+                input=(password + '\n'),
+                capture_output=True,
+                text=True,
+                env={'LC_ALL': 'C'}
+            )
+            return result.returncode == 0
+        except Exception as e:
+            print(f"Sudo validation error: {e}")
+            return False
+
+    def set_password(self, password):
+        """Store the validated password"""
+        self.user_password = password
+
+    def clear_cache(self):
+        """Invalidate sudo credentials cache"""
+        try:
+            subprocess.run(['sudo', '-k'], check=False)
+        except Exception:
+            pass
+
+    def forget_password(self):
+        """Clear stored password and invalidate sudo cache"""
+        self.user_password = None
+        self.clear_cache()
+
+    def get_env(self):
+        env = os.environ.copy()
+        return env
+
+    def cleanup(self):
+        """Remove temporary files and clear credentials"""
+        self._running = False
+        self.forget_password()
+        try:
+            os.open(self.fifo_path, os.O_RDONLY | os.O_NONBLOCK)
         except:
-            return None
+            pass
+        try:
+            if os.path.exists(self.askpass_script):
+                os.remove(self.askpass_script)
+            if os.path.exists(self.wrapper_path):
+                os.remove(self.wrapper_path)
+            if os.path.exists(self.fifo_path):
+                os.remove(self.fifo_path)
+            if os.path.exists(self.fifo_dir):
+                os.rmdir(self.fifo_dir)
+        except:
+            pass
 
-    def init_start_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(20)
+def get_sudo_manager():
+    return SudoManager.get_instance()
 
-        logo = QLabel()
-        pix = self.get_arch_logo()
-        if pix: logo.setPixmap(pix)
+APP_VERSION = "1.0"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if os.path.exists(os.path.join(SCRIPT_DIR, "../share/linexin/widgets")):
+    WIDGET_DIRECTORY = os.path.abspath(os.path.join(SCRIPT_DIR, "../share/linexin/widgets"))
+    LOCALIZATION_BASE_DIR = os.path.join(WIDGET_DIRECTORY, "localization")
+    print(f"DEBUG: Running from source. Paths set to {WIDGET_DIRECTORY}")
+else:
+    WIDGET_DIRECTORY = "/usr/share/linexin/widgets"
+    LOCALIZATION_BASE_DIR = "/usr/share/linexin/widgets/localization"
+    print(f"DEBUG: Running from system install. Paths set to {WIDGET_DIRECTORY}")
+
+SIDEBAR_WIDTH = 330
+ICON_SIZE = 32
+APP_ID = "github.petexy.linexincenter"
+FALLBACK_LANGUAGE = "en_US"
+
+_original_popen = subprocess.Popen
+_original_run = subprocess.run
+_original_call = subprocess.call
+_original_check_call = subprocess.check_call
+_original_check_output = subprocess.check_output
+_original_messagedialog_init = Adw.MessageDialog.__init__
+_original_messagedialog_set_heading = Adw.MessageDialog.set_heading
+_original_messagedialog_set_body = Adw.MessageDialog.set_body
+_original_messagedialog_add_response = Adw.MessageDialog.add_response
+_original_messagedialog_present = Adw.MessageDialog.present
+
+def _translate_with_patterns_helper(text, widget_id):
+    if not text:
+        return ""
+    translated = _(text, widget_id)
+    if translated != text:
+        return translated
+    patterns_to_translate = [
+        "{} updates available",
+        "Updating {}...",
+        "Process exited with code {}",
+        "Successfully updated your {}!",
+        "Installing {}...",
+        "Successfully installed {}!",
+        "Successfully installed {}",
+        "Successfully removed {}",
+        "Removing {}...",
+        "Removing {}",
+        "Please enter your password to {} this package.",
+        "Please enter your password to {} this package",
+        "Building {}...",
+        "Removed {}",
+        "Installed {}",
+        "Back to Search",
+        "To complete the change to {}, you need to log out and log back in again."
+    ]
+    for pattern in patterns_to_translate:
+        escaped_pattern = re.escape(pattern)
+        regex_pattern = escaped_pattern.replace(re.escape("{}"), r"(.*)")
+        match = re.search(regex_pattern, text)
+        if match:
+            translated_pattern = _(pattern, widget_id)
+            if translated_pattern != pattern:
+                if match.groups():
+                    content = match.group(1)
+                    translated_content = _translate_with_patterns_helper(content, widget_id)
+                    translated_text = translated_pattern.replace("{}", translated_content)
+                    return text.replace(match.group(0), translated_text)
+                else:
+                    return text.replace(match.group(0), translated_pattern)
+    return text
+
+def _translated_messagedialog_init(self, **kwargs):
+    widget_id = None
+    parent = kwargs.get('transient_for')
+    if parent and hasattr(parent, 'active_widget_id'):
+        widget_id = parent.active_widget_id
+    if widget_id:
+        if 'heading' in kwargs and kwargs['heading']:
+            kwargs['heading'] = _translate_with_patterns_helper(kwargs['heading'], widget_id)
+        if 'body' in kwargs and kwargs['body']:
+            kwargs['body'] = _translate_with_patterns_helper(kwargs['body'], widget_id)
+    _original_messagedialog_init(self, **kwargs)
+
+def _translated_messagedialog_set_heading(self, heading):
+    widget_id = _resolve_widget_id_from_dialog(self)
+    if heading and widget_id:
+        heading = _translate_with_patterns_helper(heading, widget_id)
+    _original_messagedialog_set_heading(self, heading)
+
+def _translated_messagedialog_set_body(self, body):
+    widget_id = _resolve_widget_id_from_dialog(self)
+    if body and widget_id:
+        body = _translate_with_patterns_helper(body, widget_id)
+    _original_messagedialog_set_body(self, body)
+
+def _translated_messagedialog_add_response(self, response_id, label):
+    widget_id = _resolve_widget_id_from_dialog(self)
+    if label and widget_id:
+        label = _translate_with_patterns_helper(label, widget_id)
+    _original_messagedialog_add_response(self, response_id, label)
+
+def _translated_messagedialog_present(self):
+    widget_id = _resolve_widget_id_from_dialog(self)
+    if widget_id:
+        win = self.get_transient_for()
+        if win and hasattr(win, '_translate_widget_recursive'):
+            win._translate_widget_recursive(self, widget_id)
+    _original_messagedialog_present(self)
+
+def _resolve_widget_id_from_dialog(dialog):
+    try:
+        win = dialog.get_transient_for()
+        if win and hasattr(win, 'active_widget_id'):
+            return win.active_widget_id
+    except:
+        pass
+    return None
+
+Adw.MessageDialog.__init__ = _translated_messagedialog_init
+Adw.MessageDialog.set_heading = _translated_messagedialog_set_heading
+Adw.MessageDialog.set_body = _translated_messagedialog_set_body
+Adw.MessageDialog.add_response = _translated_messagedialog_add_response
+Adw.MessageDialog.present = _translated_messagedialog_present
+
+_global_lock_manager = None
+
+def _get_lock_manager():
+    global _global_lock_manager
+    return _global_lock_manager
+
+class _LockedPopen(_original_popen):
+    def __init__(self, *args, **kwargs):
+        lock_manager = _get_lock_manager()
+        if lock_manager:
+            lock_manager.lock()
+        super().__init__(*args, **kwargs)
+        if lock_manager:
+            def monitor():
+                try:
+                    self.wait()
+                finally:
+                    lock_manager.unlock()
+            thread = threading.Thread(target=monitor, daemon=True)
+            thread.start()
+
+def _locked_run(*args, **kwargs):
+    lock_manager = _get_lock_manager()
+    if lock_manager:
+        lock_manager.lock()
+    try:
+        return _original_run(*args, **kwargs)
+    finally:
+        if lock_manager:
+            lock_manager.unlock()
+
+def _locked_call(*args, **kwargs):
+    lock_manager = _get_lock_manager()
+    if lock_manager:
+        lock_manager.lock()
+    try:
+        return _original_call(*args, **kwargs)
+    finally:
+        if lock_manager:
+            lock_manager.unlock()
+
+def _locked_check_call(*args, **kwargs):
+    lock_manager = _get_lock_manager()
+    if lock_manager:
+        lock_manager.lock()
+    try:
+        return _original_check_call(*args, **kwargs)
+    finally:
+        if lock_manager:
+            lock_manager.unlock()
+
+def _locked_check_output(*args, **kwargs):
+    lock_manager = _get_lock_manager()
+    if lock_manager:
+        lock_manager.lock()
+    try:
+        return _original_check_output(*args, **kwargs)
+    finally:
+        if lock_manager:
+            lock_manager.unlock()
+
+subprocess.Popen = _LockedPopen
+subprocess.run = _locked_run
+subprocess.call = _locked_call
+subprocess.check_call = _locked_check_call
+subprocess.check_output = _locked_check_output
+
+class WidgetLocalizationManager(GObject.Object):
+    __gtype_name__ = 'WidgetLocalizationManager'
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        super().__init__()
+        self.system_language = self._get_system_language()
+        print(f"System language detected: {self.system_language}")
+        self.widget_translations = {}
+        self._load_all_translations()
+        self._initialized = True
+        self.selection_timeout_id = None
+        self.pending_widget_selection = None
+
+    def _get_system_language(self):
+        try:
+            lang = locale.getlocale()[0]
+            if lang:
+                lang_code = lang.split('.')[0]
+                return lang_code
+        except:
+            pass
+        lang_env = os.environ.get('LANG', '')
+        if lang_env:
+            lang_code = lang_env.split('.')[0]
+            if lang_code:
+                return lang_code
+        return FALLBACK_LANGUAGE
+
+    def _load_all_translations(self):
+        localization_dir = Path(LOCALIZATION_BASE_DIR)
+        if not localization_dir.exists():
+            print(f"Localization directory does not exist: {LOCALIZATION_BASE_DIR}")
+            return
+        for lang_dir in localization_dir.iterdir():
+            if not lang_dir.is_dir():
+                continue
+            language_code = lang_dir.name
+            for dict_file in lang_dir.glob("*_dictionary.py"):
+                widget_name = dict_file.stem.replace("_dictionary", "")
+                self._load_translation_file(widget_name, language_code, dict_file)
+
+    def _load_translation_file(self, widget_name, language_code, file_path):
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"{widget_name}_{language_code}_dict",
+                file_path
+            )
+            if not spec or not spec.loader:
+                return
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if hasattr(module, 'translations'):
+                if widget_name not in self.widget_translations:
+                    self.widget_translations[widget_name] = {}
+                self.widget_translations[widget_name][language_code] = module.translations
+        except Exception as e:
+            pass
+
+    def get_text(self, key, widget_name="widget_loader"):
+        if widget_name in self.widget_translations:
+            widget_trans = self.widget_translations[widget_name]
+            if self.system_language in widget_trans:
+                if key in widget_trans[self.system_language]:
+                    translated = widget_trans[self.system_language][key]
+                    return translated
+            if FALLBACK_LANGUAGE in widget_trans:
+                if key in widget_trans[FALLBACK_LANGUAGE]:
+                    return widget_trans[FALLBACK_LANGUAGE][key]
+        return key
+
+_localization_manager = None
+
+class CommandLockManager:
+    def __init__(self):
+        self.is_locked = False
+        self.lock_count = 0
+        self.window_ref = None
+        self._lock = threading.Lock()
+
+    def set_window(self, window):
+        self.window_ref = window
+
+    def lock(self):
+        with self._lock:
+            self.lock_count += 1
+            if not self.is_locked:
+                self.is_locked = True
+                if self.window_ref:
+                    GLib.idle_add(self.window_ref._apply_command_lock, True)
+
+    def unlock(self):
+        with self._lock:
+            self.lock_count = max(0, self.lock_count - 1)
+            if self.lock_count == 0 and self.is_locked:
+                self.is_locked = False
+                if self.window_ref:
+                    GLib.idle_add(self.window_ref._apply_command_lock, False)
+
+def get_localization_manager():
+    global _localization_manager
+    if _localization_manager is None:
+        _localization_manager = WidgetLocalizationManager()
+    return _localization_manager
+
+def _(key, widget_name="widget_loader"):
+    return get_localization_manager().get_text(key, widget_name)
+
+class WidgetLoaderWindow(Adw.ApplicationWindow):
+    def __init__(self, *args, hide_sidebar=False, target_widget=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.hide_sidebar = hide_sidebar
+        self.target_widget = target_widget
+        self.l10n = get_localization_manager()
+        self.set_title(_("Linexin Center"))
+        self.set_default_size(1280, 730)
+        self.loaded_widgets = {}
+        self.widget_metadata = {}
+        self.widget_order = []
+        self.widget_index = {}
+        self._visible_widget_name = None
+        self.active_widget = None
+        self.active_widget_id = None
+        self.translation_timer = None
+        self.first_widget_loaded = False
+        self.selection_timeout_id = None
+        self.pending_widget_selection = None
+
+        global _global_lock_manager
+        _global_lock_manager = CommandLockManager()
+        _global_lock_manager.set_window(self)
+        self.command_lock_manager = _global_lock_manager
+        self.is_command_locked = False
+
+        self._setup_button_layout_monitoring()
+        self._build_ui()
+        self._load_all_widgets()
+
+    def resize_window(self, width, height):
+        try:
+            self.set_default_size(width, height)
+            self.set_size_request(width, height)
+            return True
+        except Exception as e:
+            print(f"Window resize failed: {e}")
+            return False
+
+    def resize_and_center(self, width, height):
+        try:
+            self.set_default_size(width, height)
+            self.set_size_request(width, height)
+            self.set_modal(True)
+            GLib.timeout_add(100, lambda: self.set_modal(False))
+            return True
+        except Exception as e:
+            print(f"Window resize failed: {e}")
+            return False
+
+    def _apply_command_lock(self, locked):
+        self.is_command_locked = locked
+        self.widget_list.set_sensitive(not locked)
+        if hasattr(self, 'sidebar_page') and not self.hide_sidebar:
+            sidebar_header = self.sidebar_page.get_child().get_first_child()
+            if sidebar_header and isinstance(sidebar_header, Gtk.HeaderBar):
+                if locked:
+                    sidebar_header.add_css_class("command-locked-controls")
+                else:
+                    sidebar_header.remove_css_class("command-locked-controls")
+        if hasattr(self, 'content_header'):
+            if locked:
+                self.content_header.add_css_class("command-locked-controls")
+            else:
+                self.content_header.remove_css_class("command-locked-controls")
+        if hasattr(self, 'split_view') and hasattr(self.split_view, 'set_show_content'):
+            self.split_view.set_show_content(not locked)
+        if locked:
+            self._block_wm_close()
         else:
-            logo.setText("ARCH SETUP")
-            logo.setObjectName("Title")
+            self._unblock_wm_close()
 
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(logo)
+    def _block_wm_close(self):
+        if not hasattr(self, '_delete_handler_id'):
+            self._delete_handler_id = self.connect('close-request', self._block_close_signal)
+        try:
+            self.set_modal(True)
+        except:
+            pass
 
-        title = QLabel("Konfigurator Systemu")
-        title.setObjectName("Title")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+    def _unblock_wm_close(self):
+        if hasattr(self, '_delete_handler_id'):
+            self.disconnect(self._delete_handler_id)
+            delattr(self, '_delete_handler_id')
+        try:
+            self.set_modal(False)
+        except:
+            pass
 
-        btn = QPushButton("Rozpocznij instalację")
-        btn.setObjectName("PrimaryBtn")
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.clicked.connect(self.ask_password)
+    def _block_close_signal(self, window):
+        return True
 
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
-        shadow.setColor(QColor(0,0,0,100))
-        shadow.setOffset(0, 5)
-        btn.setGraphicsEffect(shadow)
+    def _setup_button_layout_monitoring(self):
+        self.gnome_settings = Gio.Settings.new("org.gnome.desktop.wm.preferences")
+        self.current_button_layout = self.gnome_settings.get_string("button-layout")
+        self.gnome_settings.connect(
+            "changed::button-layout",
+            self._on_button_layout_changed
+        )
 
-        layout.addWidget(btn)
-        self.stack.addWidget(page)
-
-    def init_install_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.status_lbl = QLabel("Przygotowywanie...")
-        layout.addWidget(self.status_lbl)
-
-        self.prog_bar = QProgressBar()
-        self.prog_bar.setValue(0)
-        layout.addWidget(self.prog_bar)
-
-        self.console = QTextEdit()
-        self.console.setReadOnly(True)
-        self.console.hide()
-        layout.addWidget(self.console)
-
-        self.btn_details = QPushButton("Pokaż szczegóły")
-        self.btn_details.setCheckable(True)
-        self.btn_details.setStyleSheet("background: transparent; color: #a6adc8; border: 1px solid #45475a;")
-        self.btn_details.clicked.connect(self.toggle_console)
-        layout.addWidget(self.btn_details)
-
-        self.stack.addWidget(page)
-
-    def init_finish_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        lbl = QLabel("Gotowe!")
-        lbl.setObjectName("SuccessLabel")
-        layout.addWidget(lbl)
-
-        btn = QPushButton("Zakończ")
-        btn.setObjectName("PrimaryBtn")
-        btn.clicked.connect(self.close)
-        layout.addWidget(btn)
-        self.stack.addWidget(page)
-
-    def ask_password(self):
-        pwd, ok = QInputDialog.getText(self, "Sudo", "Podaj hasło administratora:", QLineEdit.EchoMode.Password)
-        if ok and pwd:
-            self.stack.setCurrentIndex(1)
-            self.start_install(pwd)
-
-    def start_install(self, pwd):
-        self.worker = InstallWorker(pwd)
-        self.worker.progress_signal.connect(self.prog_bar.setValue)
-        self.worker.log_signal.connect(self.log_msg)
-        self.worker.finished_signal.connect(lambda: self.stack.setCurrentIndex(2))
-        self.worker.start()
-
-    def log_msg(self, text):
-        self.console.append(text)
-        if not text.startswith("$"):
-            self.status_lbl.setText(text[:50] + "...")
-
-    def toggle_console(self):
-        if self.btn_details.isChecked():
-            self.console.show()
-            self.btn_details.setText("Ukryj")
+    def _build_ui(self):
+        self._create_persistent_widgets()
+        if self.hide_sidebar:
+            self._build_content_area()
+            self.set_content(self.content_page)
+            self.set_resizable(True)
+            self.set_size_request(1, 1)
         else:
-            self.console.hide()
-            self.btn_details.setText("Pokaż")
+            self._build_sidebar()
+            self._build_content_area()
+            self.split_view = Adw.NavigationSplitView()
+            self.split_view.set_sidebar(self.sidebar_page)
+            self.split_view.set_content(self.content_page)
+            self.set_content(self.split_view)
+        self._apply_styling()
 
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    win = ModernInstaller()
-    win.show()
-    sys.exit(app.exec())
+    def _create_persistent_widgets(self):
+        self.widget_stack = Gtk.Stack()
+        self.widget_stack.set_transition_type(Gtk.StackTransitionType.SLIDE_UP_DOWN)
+        self.widget_stack.set_transition_duration(300)
+        self.widget_stack.set_hexpand(True)
+        self.widget_stack.set_vexpand(True)
+        placeholder = Gtk.Label(label=_("Select a widget from the sidebar"))
+        placeholder.set_vexpand(True)
+        placeholder.set_hexpand(True)
+        self.widget_stack.add_named(placeholder, "placeholder")
+        self.widget_stack.set_visible_child_name("placeholder")
+        self.content_display = Adw.Bin()
+        self.content_display.set_hexpand(True)
+        self.content_display.set_vexpand(True)
+        self.content_display.set_child(self.widget_stack)
+        self.widget_list = Gtk.ListBox()
+        self.widget_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.widget_list.add_css_class("navigation-sidebar")
+        self.widget_list.connect("row-activated", self._on_widget_selected)
+
+    def _build_sidebar(self):
+        self.sidebar_page = Adw.NavigationPage()
+        self.sidebar_page.set_title(_("Widgets"))
+        sidebar_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        sidebar_container.set_spacing(0)
+        sidebar_container.set_size_request(SIDEBAR_WIDTH, -1)
+        sidebar_container.set_hexpand(False)
+        header = self._create_sidebar_header()
+        sidebar_container.append(header)
+        separator = self._create_invisible_separator()
+        sidebar_container.append(separator)
+        scrollable_area = self._create_scrollable_widget_list()
+        sidebar_container.append(scrollable_area)
+        self._setup_sidebar_context_menu()
+        self.sidebar_page.set_child(sidebar_container)
+
+    def _setup_sidebar_context_menu(self):
+        menu = Gio.Menu()
+        item = Gio.MenuItem.new(_("Create a shortcut"), "win.create_shortcut")
+        menu.append_item(item)
+
+        self.sidebar_popover = Gtk.PopoverMenu.new_from_model(menu)
+        self.sidebar_popover.set_parent(self.widget_list)
+        self.sidebar_popover.set_has_arrow(False)
+
+        action = Gio.SimpleAction.new("create_shortcut", None)
+        action.connect("activate", self._on_create_shortcut)
+        self.add_action(action)
+
+        action_remove = Gio.SimpleAction.new("remove_shortcut", None)
+        action_remove.connect("activate", self._on_remove_shortcut)
+        self.add_action(action_remove)
+
+        gesture = Gtk.GestureClick()
+        gesture.set_button(3)
+        gesture.connect("pressed", self._on_sidebar_right_click)
+        self.widget_list.add_controller(gesture)
+
+    def _on_sidebar_right_click(self, gesture, n_press, x, y):
+        row = self.widget_list.get_row_at_y(y)
+        if not row:
+            return
+        self._context_menu_row = row
+
+        widget_name = getattr(row, 'widget_name', '')
+        metadata = self.widget_metadata.get(widget_name, {})
+        filename = metadata.get('filename', widget_name)
+        clean_name = os.path.splitext(filename)[0]
+        target_path = f"/usr/share/applications/{clean_name}.desktop"
+
+        menu = Gio.Menu()
+        if os.path.exists(target_path):
+            menu.append(_("Remove shortcut"), "win.remove_shortcut")
+        else:
+            menu.append(_("Create a shortcut"), "win.create_shortcut")
+
+        self.sidebar_popover.set_menu_model(menu)
+
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+        self.sidebar_popover.set_pointing_to(rect)
+        self.sidebar_popover.set_position(Gtk.PositionType.BOTTOM)
+        self.sidebar_popover.popup()
+
+    def _on_create_shortcut(self, action, param):
+        if not hasattr(self, '_context_menu_row') or not self._context_menu_row:
+            return
+
+        row = self._context_menu_row
+        widget_name = getattr(row, 'widget_name', None)
+        if not widget_name: return
+
+        manager = get_sudo_manager()
+        if not manager.user_password:
+            self._prompt_for_password_dialog(lambda: self._perform_shortcut_creation(widget_name), _("Please enter your password to create the shortcut."))
+        else:
+            self._perform_shortcut_creation(widget_name)
+
+    def _on_remove_shortcut(self, action, param):
+        if not hasattr(self, '_context_menu_row') or not self._context_menu_row:
+            return
+        row = self._context_menu_row
+        widget_name = getattr(row, 'widget_name', None)
+        if not widget_name: return
+
+        manager = get_sudo_manager()
+        if not manager.user_password:
+            self._prompt_for_password_dialog(lambda: self._perform_shortcut_removal(widget_name), _("Please enter your password to remove the shortcut."))
+        else:
+            self._perform_shortcut_removal(widget_name)
+
+    def _prompt_for_password_dialog(self, success_callback, message):
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading=_("Authentication Required"),
+            body=message
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("authenticate", _("Authenticate"))
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        entry = Gtk.PasswordEntry()
+        box.append(entry)
+        dialog.set_extra_child(box)
+
+        def response_handler(dlg, response):
+            if response == "authenticate":
+                password = entry.get_text()
+                manager = get_sudo_manager()
+                if manager.validate_password(password):
+                    manager.set_password(password)
+                    success_callback()
+                else:
+                    err_dlg = Adw.MessageDialog(
+                        transient_for=self,
+                        heading=_("Authentication Failed"),
+                        body=_("Incorrect password.")
+                    )
+                    err_dlg.add_response("ok", _("OK"))
+                    err_dlg.present()
+
+        dialog.connect("response", response_handler)
+        dialog.set_default_response("authenticate")
+        dialog.present()
+
+    def _perform_shortcut_creation(self, widget_name):
+        metadata = self.widget_metadata.get(widget_name, {})
+        filename = metadata.get('filename', widget_name)
+        widget_id = metadata.get('widget_id',  widget_name.lower().replace(' ', '_'))
+        clean_name = os.path.splitext(filename)[0]
+
+        display_name = _(widget_name, widget_id)
+
+        icon_path = metadata.get('icon_path', '')
+        if icon_path and not icon_path.startswith('/'):
+             icon_path = f"/usr/share/icons/{icon_path}"
+
+        content = f"""[Desktop Entry]
+Name={display_name}
+Exec=linexin-center -w {clean_name}
+Icon={icon_path}
+Terminal=false
+Type=Application
+Categories=Utility;Tools;
+StartupNotify=false
+Hidden=false
+"""
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+
+            desktop_filename = f"{clean_name}.desktop"
+            target_path = f"/usr/share/applications/{desktop_filename}"
+
+            manager = get_sudo_manager()
+            manager.run_privileged(["mv", tmp_path, target_path], check=True)
+
+            dlg = Adw.MessageDialog(
+                transient_for=self,
+                heading=_("Shortcut Created"),
+                body=_("Successfully created shortcut for {}").format(display_name)
+            )
+            dlg.add_response("ok", _("OK"))
+            dlg.present()
+
+        except Exception as e:
+            print(f"Error creating shortcut: {e}")
+            dlg = Adw.MessageDialog(
+                transient_for=self,
+                heading=_("Error"),
+                body=str(e)
+            )
+            dlg.add_response("ok", _("OK"))
+            dlg.present()
+        finally:
+            get_sudo_manager().forget_password()
+
+    def _perform_shortcut_removal(self, widget_name):
+        metadata = self.widget_metadata.get(widget_name, {})
+        filename = metadata.get('filename', widget_name)
+        widget_id = metadata.get('widget_id',  widget_name.lower().replace(' ', '_'))
+        clean_name = os.path.splitext(filename)[0]
+        display_name = _(widget_name, widget_id)
+
+        target_path = f"/usr/share/applications/{clean_name}.desktop"
+
+        try:
+            if not os.path.exists(target_path):
+                 return
+
+            manager = get_sudo_manager()
+            manager.run_privileged(["rm", "-f", target_path], check=True)
+
+            dlg = Adw.MessageDialog(
+                transient_for=self,
+                heading=_("Shortcut Removed"),
+                body=_("Successfully removed shortcut for {}").format(display_name)
+            )
+            dlg.add_response("ok", _("OK"))
+            dlg.present()
+        except Exception as e:
+            print(f"Error removing shortcut: {e}")
+            dlg = Adw.MessageDialog(
+                transient_for=self,
+                heading=_("Error"),
+                body=str(e)
+            )
+            dlg.add_response("ok", _("OK"))
+            dlg.present()
+        finally:
+            get_sudo_manager().forget_password()
+
+    def _create_sidebar_header(self):
+        header = Gtk.HeaderBar()
+        header.add_css_class("flat")
+        title = Gtk.Label(label=_("Linexin Center"))
+        title.add_css_class("heading")
+        header.set_title_widget(title)
+        left_buttons, right_buttons = self._parse_button_layout()
+        if left_buttons:
+            header.set_show_title_buttons(True)
+            header.set_decoration_layout(f"{left_buttons}:")
+            title.set_margin_top(0)
+            title.set_margin_start(30)
+        else:
+            header.set_show_title_buttons(False)
+            title.set_margin_top(10)
+        return header
+
+    def _create_scrollable_widget_list(self):
+        scrolled_window = Gtk.ScrolledWindow()
+        scrolled_window.set_policy(
+            Gtk.PolicyType.NEVER,
+            Gtk.PolicyType.AUTOMATIC
+        )
+        scrolled_window.set_hexpand(False)
+        scrolled_window.set_vexpand(True)
+        scrolled_window.set_child(self.widget_list)
+        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        container.set_margin_top(6)
+        container.set_margin_bottom(6)
+        container.set_margin_start(6)
+        container.set_margin_end(6)
+        container.append(scrolled_window)
+        return container
+
+    def _build_content_area(self):
+        self.content_page = Adw.NavigationPage()
+        self.content_page.set_title(_("Widget Content"))
+        content_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content_container.set_spacing(0)
+        header = self._create_content_header()
+        content_container.append(header)
+        separator = self._create_invisible_separator()
+        content_container.append(separator)
+        content_container.append(self.content_display)
+        self.content_page.set_child(content_container)
+
+    def _create_content_header(self):
+        header = Gtk.HeaderBar()
+        header.add_css_class("flat")
+        self.content_header = header
+        self._widget_header_widget = None
+        if self.hide_sidebar:
+            header.set_show_title_buttons(True)
+            header.set_decoration_layout(self.current_button_layout)
+        else:
+            left_buttons, right_buttons = self._parse_button_layout()
+            if right_buttons:
+                header.set_show_title_buttons(True)
+                header.set_decoration_layout(f":{right_buttons}")
+            else:
+                header.set_show_title_buttons(False)
+        header.set_title_widget(Gtk.Label(label=""))
+        return header
+
+    def _create_invisible_separator(self):
+        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        separator.add_css_class("hidden-separator")
+        return separator
+
+    def _load_all_widgets(self):
+        if not os.path.exists(WIDGET_DIRECTORY):
+            if not self.hide_sidebar:
+                self._show_error_in_list(
+                    _("No widgets found"),
+                    _("Directory does not exist").replace("Directory", WIDGET_DIRECTORY)
+                )
+            return
+        if self.hide_sidebar and self.target_widget:
+            self._load_target_widget_only()
+        else:
+            self._load_all_widgets_normal()
+        if self.hide_sidebar and self.target_widget:
+            self._select_target_widget()
+        elif not self.hide_sidebar:
+            self._auto_select_first_widget()
+
+    def _load_all_widgets_normal(self):
+        python_files = [f for f in os.listdir(WIDGET_DIRECTORY) if f.endswith(".py")]
+        python_files.sort()
+        for filename in python_files:
+            filepath = os.path.join(WIDGET_DIRECTORY, filename)
+            module_name = filename[:-3]
+            self._load_widget_from_file(filepath, module_name)
+
+    def _load_target_widget_only(self):
+        target_normalized = self.target_widget.lower().replace('-', '_').replace(' ', '_')
+        if not target_normalized.endswith('.py'):
+            target_normalized += '.py'
+        if not os.path.exists(WIDGET_DIRECTORY):
+            return
+        python_files = [f for f in os.listdir(WIDGET_DIRECTORY) if f.endswith(".py")]
+        target_file = None
+        for filename in python_files:
+            filename_normalized = filename.lower().replace('-', '_').replace(' ', '_')
+            if (filename_normalized == target_normalized or
+                filename.lower() == self.target_widget.lower() or
+                filename.lower() == self.target_widget.lower() + '.py'):
+                target_file = filename
+                break
+        if target_file:
+            filepath = os.path.join(WIDGET_DIRECTORY, target_file)
+            module_name = target_file[:-3]
+            print(f"Loading only target widget: {target_file}")
+            self._load_widget_from_file(filepath, module_name)
+        else:
+            print(f"Target widget file not found: {self.target_widget}")
+
+    def _select_target_widget(self):
+        if not self.widget_metadata:
+            print(f"No widgets loaded for target: {self.target_widget}")
+            error_label = Gtk.Label(label=f"Widget '{self.target_widget}' not found or failed to load")
+            error_label.set_vexpand(True)
+            error_label.set_hexpand(True)
+            error_label.add_css_class("dim-label")
+            self.widget_stack.add_named(error_label, "error")
+            self.widget_stack.set_visible_child_name("error")
+            return
+        widget_name = list(self.widget_metadata.keys())[0]
+        print(f"Loading single widget: {widget_name}")
+        self._load_single_widget_mode(widget_name)
+
+    def _load_single_widget_mode(self, widget_name):
+        if widget_name not in self.loaded_widgets:
+            return
+        widget_instance = self.loaded_widgets[widget_name]
+        self.active_widget = widget_instance
+        self.active_widget_id = self.widget_metadata.get(widget_name, {}).get('widget_id')
+        GLib.idle_add(self.update_widget_header)
+        filename = self.widget_metadata.get(widget_name, {}).get('filename', widget_name)
+        stack_page_name = self._generate_stack_page_name(filename)
+        self._add_widget_to_stack(widget_instance, widget_name, stack_page_name)
+        transition = None
+        prev_name = getattr(self, '_visible_widget_name', None)
+        if prev_name and prev_name in self.widget_index and widget_name in self.widget_index:
+            prev_idx = self.widget_index[prev_name]
+            curr_idx = self.widget_index[widget_name]
+            if curr_idx > prev_idx:
+                transition = Gtk.StackTransitionType.SLIDE_DOWN
+            elif curr_idx < prev_idx:
+                transition = Gtk.StackTransitionType.SLIDE_UP
+        if transition is not None:
+            self.widget_stack.set_visible_child_full(stack_page_name, transition)
+        else:
+            self.widget_stack.set_visible_child_name(stack_page_name)
+        self._visible_widget_name = widget_name
+        if self.active_widget_id and isinstance(widget_instance, Gtk.Widget):
+            self._translate_widget_content(widget_instance, self.active_widget_id)
+            self._connect_widget_signals(widget_instance, self.active_widget_id)
+        self._start_translation_monitoring()
+        display_name = _(widget_name, self.active_widget_id) if self.active_widget_id else widget_name
+        self.set_title(display_name)
+        self.content_page.set_title(display_name)
+
+    def update_widget_header(self):
+        if not self.hide_sidebar or not hasattr(self, 'content_header'):
+            return
+        if hasattr(self, '_widget_header_widget') and self._widget_header_widget:
+            self.content_header.remove(self._widget_header_widget)
+            self._widget_header_widget = None
+        if hasattr(self, 'active_widget') and self.active_widget:
+            if hasattr(self.active_widget, 'get_header_bar_widget'):
+                try:
+                    widget_header_widget = self.active_widget.get_header_bar_widget()
+                    if widget_header_widget:
+                        left_buttons, right_buttons = self._parse_button_layout()
+                        if left_buttons:
+                            self.content_header.pack_end(widget_header_widget)
+                        else:
+                            self.content_header.pack_start(widget_header_widget)
+                        self._widget_header_widget = widget_header_widget
+                except Exception as e:
+                    print(f"Error adding widget header controls: {e}")
+
+    def _auto_select_first_widget(self):
+        if not self.first_widget_loaded and self.widget_list.get_first_child():
+            first_row = self.widget_list.get_first_child()
+            if first_row and hasattr(first_row, 'widget_name'):
+                self.widget_list.select_row(first_row)
+                self._on_widget_selected(self.widget_list, first_row)
+                self.first_widget_loaded = True
+
+    def _load_widget_from_file(self, filepath, module_name):
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, filepath)
+            if not spec or not spec.loader:
+                return
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            filename_base = os.path.splitext(os.path.basename(filepath))[0]
+            potential_keys = [filename_base]
+            if len(filename_base) > 2 and filename_base[1] == '-':
+                 potential_keys.append(filename_base[2:])
+            underscore_keys = [k.replace('-', '_') for k in potential_keys]
+            potential_keys.extend(underscore_keys)
+            manager = get_localization_manager()
+            selected_key = potential_keys[0]
+            for key in potential_keys:
+                if key in manager.widget_translations:
+                    selected_key = key
+                    break
+            if selected_key not in manager.widget_translations:
+                 for key in potential_keys:
+                      clean_key = key.replace('_widget', '').replace('-widget', '')
+                      if clean_key in manager.widget_translations:
+                           selected_key = clean_key
+                           break
+            print(f"DEBUG: Injecting translation for {module_name} using key '{selected_key}'")
+            def injected_underscore(message, widget_id=selected_key):
+                return _translate_with_patterns_helper(message, widget_id)
+            module._ = injected_underscore
+            module.sudo_manager = get_sudo_manager()
+            filename = os.path.basename(filepath)
+            self._extract_widgets_from_module(module, filename)
+        except Exception as e:
+            traceback.print_exc()
+
+    def _extract_widgets_from_module(self, module, filename):
+        for attribute_name in dir(module):
+            attribute = getattr(module, attribute_name)
+            if not isinstance(attribute, type):
+                continue
+
+            if not issubclass(attribute, Gtk.Widget):
+                continue
+
+            try:
+                try:
+                    widget_instance = attribute(hide_sidebar=self.hide_sidebar, window=self)
+                except TypeError:
+                    widget_instance = attribute()
+                if hasattr(widget_instance, 'widgetname'):
+                    self._register_widget(widget_instance, filename)
+            except Exception as e:
+                print(f"Failed to instantiate widget in {filename}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+
+    def _register_widget(self, widget_instance, filename):
+        widget_name = widget_instance.widgetname
+        self.loaded_widgets[widget_name] = widget_instance
+        icon_path = getattr(widget_instance, 'widgeticon', None)
+        widget_id = getattr(widget_instance, 'widget_id', widget_name.lower().replace(' ', '_'))
+        self.widget_metadata[widget_name] = {
+            'icon_path': icon_path,
+            'widget_id': widget_id,
+            'filename': filename
+        }
+        if widget_name not in self.widget_index:
+            self.widget_order.append(widget_name)
+            self.widget_index[widget_name] = len(self.widget_order) - 1
+        translated_name = _(widget_name, widget_id)
+        self._add_widget_to_sidebar(widget_name, translated_name, icon_path)
+
+    def _add_widget_to_sidebar(self, widget_name, display_name, icon_path=None):
+        row = Adw.ActionRow()
+        row.set_title(display_name)
+        row.set_activatable(True)
+        row.widget_name = widget_name
+        row.display_name = display_name
+        icon = self._load_widget_icon(icon_path)
+        row.add_prefix(icon)
+        self.widget_list.append(row)
+
+    def _load_widget_icon(self, icon_path):
+        if not icon_path or not os.path.exists(icon_path):
+            image = Gtk.Image.new_from_icon_name("application-x-addon-symbolic")
+            image.set_pixel_size(ICON_SIZE)
+            return image
+        try:
+            file_extension = os.path.splitext(icon_path)[1].lower()
+            if file_extension == '.svg':
+                image = Gtk.Image()
+                image.set_from_file(icon_path)
+                image.set_pixel_size(ICON_SIZE)
+                return image
+            else:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(
+                    icon_path, ICON_SIZE, ICON_SIZE
+                )
+                texture = Gdk.Texture.new_for_pixbuf(pixbuf)
+                image = Gtk.Image.new_from_paintable(texture)
+                image.set_pixel_size(ICON_SIZE)
+                return image
+        except Exception as e:
+            print(f"Error loading icon from {icon_path}: {e}")
+            image = Gtk.Image.new_from_icon_name("application-x-addon-symbolic")
+            image.set_pixel_size(ICON_SIZE)
+            return image
+
+    def do_close_request(self):
+        if getattr(self, 'is_command_locked', False):
+            return True
+        if hasattr(self, '_stop_translation_monitoring'):
+            self._stop_translation_monitoring()
+        return False
+
+    def _on_widget_selected(self, listbox, row):
+        if getattr(self, 'is_command_locked', False):
+            if not hasattr(row, 'widget_name'):
+                return
+        if self.selection_timeout_id:
+            GLib.source_remove(self.selection_timeout_id)
+        self.pending_widget_selection = row
+        self.selection_timeout_id = GLib.timeout_add(50, self._execute_widget_selection)
+
+    def _execute_widget_selection(self):
+        row = self.pending_widget_selection
+        if not row or not hasattr(row, 'widget_name'):
+            self.selection_timeout_id = None
+            return False
+        widget_name = row.widget_name
+        if widget_name not in self.loaded_widgets:
+            self.selection_timeout_id = None
+            return False
+        self._stop_translation_monitoring()
+        widget_instance = self.loaded_widgets[widget_name]
+        self.active_widget = widget_instance
+        self.active_widget_id = self.widget_metadata.get(widget_name, {}).get('widget_id')
+        filename = self.widget_metadata.get(widget_name, {}).get('filename', widget_name)
+        stack_page_name = self._generate_stack_page_name(filename)
+        existing_child = self.widget_stack.get_child_by_name(stack_page_name)
+        if existing_child is None:
+            self._add_widget_to_stack(widget_instance, widget_name, stack_page_name)
+        transition = None
+        prev_name = getattr(self, '_visible_widget_name', None)
+        if prev_name and prev_name in self.widget_index and widget_name in self.widget_index:
+            prev_idx = self.widget_index[prev_name]
+            curr_idx = self.widget_index[widget_name]
+            if curr_idx > prev_idx:
+                transition = Gtk.StackTransitionType.SLIDE_DOWN
+            elif curr_idx < prev_idx:
+                transition = Gtk.StackTransitionType.SLIDE_UP
+        if transition is not None:
+            self.widget_stack.set_visible_child_full(stack_page_name, transition)
+        else:
+            self.widget_stack.set_visible_child_name(stack_page_name)
+        self._visible_widget_name = widget_name
+        if self.active_widget_id and isinstance(widget_instance, Gtk.Widget):
+            self._translate_widget_content(widget_instance, self.active_widget_id)
+            self._connect_widget_signals(widget_instance, self.active_widget_id)
+        self._start_translation_monitoring()
+        display_name = row.display_name if hasattr(row, 'display_name') else widget_name
+        self.content_page.set_title(display_name)
+        self.selection_timeout_id = None
+        return False
+
+    def _generate_stack_page_name(self, filename_or_widget_name):
+        name = filename_or_widget_name
+        if name.endswith('.py'):
+            name = name[:-3]
+        clean_name = name.lower().replace(' ', '_').replace('-', '_')
+        return f"widget_{clean_name}"
+
+    def _add_widget_to_stack(self, widget_instance, widget_name, stack_page_name):
+        try:
+            if self.widget_stack.get_child_by_name(stack_page_name):
+                return
+            if isinstance(widget_instance, Gtk.Widget):
+                self.widget_stack.add_named(widget_instance, stack_page_name)
+            elif hasattr(widget_instance, 'get_widget'):
+                try:
+                    gtk_widget = widget_instance.get_widget()
+                    self.widget_stack.add_named(gtk_widget, stack_page_name)
+                except Exception as e:
+                    error_widget = self._create_error_widget(widget_name, str(e))
+                    self.widget_stack.add_named(error_widget, stack_page_name)
+            else:
+                error_widget = self._create_error_widget(widget_name, _("Widget cannot be displayed"))
+                self.widget_stack.add_named(error_widget, stack_page_name)
+        except Exception as e:
+            error_widget = self._create_error_widget(widget_name, str(e))
+            try:
+                self.widget_stack.add_named(error_widget, stack_page_name)
+            except:
+                pass
+
+    def _create_error_widget(self, widget_name, error_message):
+        error_text = _("Error loading") + f" '{widget_name}': {error_message}"
+        error_label = Gtk.Label(label=error_text)
+        error_label.set_vexpand(True)
+        error_label.set_hexpand(True)
+        error_label.add_css_class("dim-label")
+        return error_label
+
+    def _start_translation_monitoring(self):
+        if self.active_widget and self.active_widget_id:
+            self._stop_translation_monitoring()
+            self.translation_timer = GLib.timeout_add(100, self._monitor_widget_changes)
+
+    def _stop_translation_monitoring(self):
+        if hasattr(self, 'translation_timer') and self.translation_timer:
+            GLib.source_remove(self.translation_timer)
+            self.translation_timer = None
+
+    def _connect_widget_signals(self, widget, widget_id):
+        try:
+            if isinstance(widget, Gtk.Widget):
+                widget.connect("notify", lambda w, pspec: self._on_widget_property_changed(w, pspec, widget_id))
+            if hasattr(widget, 'get_first_child'):
+                child = widget.get_first_child()
+                while child:
+                    self._connect_widget_signals(child, widget_id)
+                    child = child.get_next_sibling()
+            elif hasattr(widget, 'get_child'):
+                child = widget.get_child()
+                if child:
+                    self._connect_widget_signals(child, widget_id)
+        except Exception:
+            pass
+
+    def _on_widget_property_changed(self, widget, param_spec, widget_id):
+        if param_spec.name in ['label', 'text', 'placeholder-text', 'title', 'subtitle', 'description']:
+            GLib.idle_add(lambda: self._translate_single_widget(widget, widget_id))
+
+    def _monitor_widget_changes(self):
+        if self.active_widget and self.active_widget_id:
+            try:
+                if isinstance(self.active_widget, Gtk.Widget):
+                    self._translate_widget_content(self.active_widget, self.active_widget_id)
+            except Exception:
+                pass
+            return True
+        else:
+            return False
+
+    def _translate_widget_content(self, widget, widget_id):
+        self._translate_widget_recursive(widget, widget_id)
+
+    def _translate_widget_recursive(self, widget, widget_id):
+        try:
+            self._translate_single_widget(widget, widget_id)
+            if hasattr(widget, 'get_first_child'):
+                child = widget.get_first_child()
+                while child:
+                    self._translate_widget_recursive(child, widget_id)
+                    child = child.get_next_sibling()
+            elif hasattr(widget, 'get_child'):
+                child = widget.get_child()
+                if child:
+                    self._translate_widget_recursive(child, widget_id)
+        except Exception:
+            pass
+
+    def _translate_markup_content(self, markup_text, widget_id):
+        markup_text = _translate_with_patterns_helper(markup_text, widget_id)
+        def replace_text(match):
+            text_content = match.group(1)
+            if text_content.strip():
+                translated = _(text_content.strip(), widget_id)
+                if translated != text_content.strip():
+                    leading_space = text_content[:len(text_content) - len(text_content.lstrip())]
+                    trailing_space = text_content[len(text_content.rstrip()):]
+                    return ">" + leading_space + translated + trailing_space + "<"
+            return ">" + text_content + "<"
+        return re.sub(r'>([^<]+)<', replace_text, markup_text)
+
+    def _translate_single_widget(self, widget, widget_id):
+        try:
+            if isinstance(widget, Gtk.Label):
+                if widget.get_use_markup():
+                    markup = widget.get_label()
+                    if markup:
+                        translated_markup = self._translate_markup_content(markup, widget_id)
+                        if translated_markup != markup:
+                            widget.set_markup(translated_markup)
+                else:
+                    text = widget.get_text()
+                    if text:
+                        translated = _translate_with_patterns_helper(text, widget_id)
+                        if translated != text:
+                            widget.set_text(translated)
+            elif isinstance(widget, Gtk.Button):
+                label = widget.get_label()
+                if label:
+                    translated = _translate_with_patterns_helper(label, widget_id)
+                    if translated != label:
+                        widget.set_label(translated)
+            elif isinstance(widget, (Gtk.Entry, Gtk.SearchEntry, Gtk.PasswordEntry)):
+                placeholder = widget.get_placeholder_text()
+                if placeholder:
+                    translated = _translate_with_patterns_helper(placeholder, widget_id)
+                    if translated != placeholder:
+                        widget.set_placeholder_text(translated)
+            elif isinstance(widget, Adw.ActionRow):
+                title = widget.get_title()
+                if title:
+                    translated = _translate_with_patterns_helper(title, widget_id)
+                    if translated != title:
+                        widget.set_title(translated)
+                subtitle = widget.get_subtitle()
+                if subtitle:
+                    translated = _translate_with_patterns_helper(subtitle, widget_id)
+                    if translated != subtitle:
+                        widget.set_subtitle(translated)
+            elif isinstance(widget, Adw.StatusPage):
+                title = widget.get_title()
+                if title:
+                    translated = _translate_with_patterns_helper(title, widget_id)
+                    if translated != title:
+                        widget.set_title(translated)
+                desc = widget.get_description()
+                if desc:
+                    translated = _translate_with_patterns_helper(desc, widget_id)
+                    if translated != desc:
+                        widget.set_description(translated)
+            elif isinstance(widget, (Gtk.Window, Adw.ApplicationWindow)):
+                title = widget.get_title()
+                if title:
+                    translated = _(title, widget_id)
+                    if translated != title:
+                        widget.set_title(translated)
+            if hasattr(widget, 'get_visible') and widget.get_visible():
+                pass
+        except Exception:
+            pass
+
+    def _on_button_layout_changed(self, settings, key):
+        self.current_button_layout = settings.get_string("button-layout")
+        self._rebuild_headers()
+
+    def _rebuild_headers(self):
+        selected_row = self.widget_list.get_selected_row()
+        selected_widget = (
+            selected_row.widget_name
+            if selected_row and hasattr(selected_row, 'widget_name')
+            else None
+        )
+        current_content = self.content_display.get_child()
+        if self.widget_list.get_parent():
+            self.widget_list.get_parent().set_child(None)
+        if self.content_display.get_parent():
+            self.content_display.get_parent().remove(self.content_display)
+        self._build_sidebar()
+        self._build_content_area()
+        self.split_view.set_sidebar(self.sidebar_page)
+        self.split_view.set_content(self.content_page)
+        if current_content:
+            self.content_display.set_child(current_content)
+        if selected_widget:
+            self._restore_selection(selected_widget)
+
+    def _restore_selection(self, widget_name):
+        for row in self.widget_list:
+            if hasattr(row, 'widget_name') and row.widget_name == widget_name:
+                self.widget_list.select_row(row)
+                break
+
+    def _parse_button_layout(self):
+        if ":" in self.current_button_layout:
+            left, right = self.current_button_layout.split(":")
+            return left, right
+        else:
+            return self.current_button_layout, ""
+
+    def _show_placeholder_message(self):
+        placeholder = Gtk.Label(label=_("Select a widget from the sidebar"))
+        placeholder.set_vexpand(True)
+        placeholder.set_hexpand(True)
+        self.content_display.set_child(placeholder)
+
+    def _show_error_in_list(self, title, subtitle):
+        row = Adw.ActionRow()
+        row.set_title(title)
+        row.set_subtitle(subtitle)
+        self.widget_list.append(row)
+
+    def _apply_styling(self):
+        css = """
+            headerbar.flat {
+                min-height: 0;
+                padding-top: 3px;
+                padding-bottom: 3px;
+                background: transparent;
+                border: none;
+                box-shadow: none;
+            }
+            .hidden-separator {
+                opacity: 0;
+                min-height: 1px;
+            }
+            .dim-label {
+                opacity: 0.6;
+            }
+            .navigation-sidebar row {
+                margin-bottom: 6px;
+            }
+            .buttons_all {
+                font-size: 14px;
+                min-width: 200px;
+                min-height: 40px;
+            }
+            widget:insensitive {
+                opacity: 0.3;
+            }
+            .command-locked {
+                background: alpha(@warning_color, 0.1);
+            }
+            .command-locked-controls windowcontrols {
+                opacity: 0;
+            }
+            .command-locked-controls windowcontrols button {
+                opacity: 0;
+            }
+        """
+        css_provider = Gtk.CssProvider()
+        css_provider.load_from_data(css.encode())
+        Gtk.StyleContext.add_provider_for_display(
+            self.get_display(),
+            css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+class WidgetLoaderApp(Adw.Application):
+    def __init__(self, **kwargs):
+        super().__init__(application_id=APP_ID, **kwargs)
+        self.connect('activate', self.on_activate)
+        self.hide_sidebar = False
+        self.target_widget = None
+        self._parse_arguments()
+
+    def _parse_arguments(self):
+        import sys
+        print(f"Command line arguments: {sys.argv}")
+        new_argv = [sys.argv[0]]
+        i = 1
+        while i < len(sys.argv):
+            arg = sys.argv[i]
+            if arg == '--widget' or arg == '-w':
+                if i + 1 < len(sys.argv):
+                    self.target_widget = sys.argv[i + 1]
+                    self.hide_sidebar = True
+                    print(f"Found widget argument: {self.target_widget}")
+                    i += 2
+                    continue
+                else:
+                    print("Error: --widget requires a widget name")
+                    sys.exit(1)
+            elif arg == '--version' or arg == '-v':
+                print(f"Linexin Tools v{APP_VERSION}")
+                sys.exit(0)
+            else:
+                new_argv.append(arg)
+                i += 1
+        sys.argv = new_argv
+        print(f"Cleaned arguments for GTK: {sys.argv}")
+        print(f"Final settings: hide_sidebar={self.hide_sidebar}, target_widget={self.target_widget}")
+
+    def on_activate(self, app):
+        self.window = WidgetLoaderWindow(
+            application=app,
+            hide_sidebar=self.hide_sidebar,
+            target_widget=self.target_widget
+        )
+        self.window.present()
+
+def main():
+    app = WidgetLoaderApp()
+    return app.run(sys.argv)
+
+if __name__ == '__main__':
+    main()
