@@ -9,243 +9,441 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Gio, Gdk
 
-# --- 1. LOGIKA INSTALACJI (BACKEND) ---
+# ==============================================================================
+# 🔧 KONFIGURACJA - EDYTUJ TE LISTY
+# ==============================================================================
+
+# Źródła: "flatpak", "aur", "pacman"
+SOFTWARE_LIST = [
+    # Przeglądarki
+    {"name": "Firefox",          "pkg": "org.mozilla.firefox",         "source": "flatpak", "checked": True},
+    {"name": "Zen Browser",      "pkg": "io.github.zen_browser.zen",   "source": "flatpak", "checked": False},
+
+    # Narzędzia
+    {"name": "Visual Studio Code", "pkg": "com.visualstudio.code",     "source": "flatpak", "checked": True},
+    {"name": "Prism Launcher",   "pkg": "org.prismlauncher.PrismLauncher", "source": "flatpak", "checked": False},
+    {"name": "Steam",            "pkg": "com.valvesoftware.Steam",     "source": "flatpak", "checked": False},
+    {"name": "Discord",          "pkg": "com.discordapp.Discord",      "source": "flatpak", "checked": True},
+    {"name": "OBS Studio",       "pkg": "com.obsproject.Studio",       "source": "flatpak", "checked": False},
+    {"name": "AnyDesk",          "pkg": "com.anydesk.Anydesk",         "source": "flatpak", "checked": False},
+
+    # WYJĄTEK (AUR)
+    {"name": "DaVinci Resolve",  "pkg": "davinci-resolve",             "source": "aur",     "checked": False},
+]
+
+# Środowiska graficzne (zostawiamy pacman)
+DE_LIST = [
+    {"name": "KDE Plasma (Full)", "pkg": "plasma-meta",       "source": "pacman"},
+    {"name": "GNOME (Full)",      "pkg": "gnome",             "source": "pacman"},
+    {"name": "Cinnamon",          "pkg": "cinnamon",          "source": "pacman"},
+    {"name": "i3 Window Manager", "pkg": "i3-wm",             "source": "pacman"},
+]
+
+# ==============================================================================
+# 🧠 LOGIKA INSTALACJI (BACKEND)
+# ==============================================================================
 
 class InstallWorker(threading.Thread):
-    def __init__(self, password, on_log, on_finish):
+    def __init__(self, password, queue, on_progress, on_finish):
         super().__init__()
         self.password = password
-        self.on_log = on_log
+        self.queue = queue          # Lista pakietów do zainstalowania
+        self.on_progress = on_progress
         self.on_finish = on_finish
         self.daemon = True
+        # +3 kroki ekstra: Update, Git/Base, Flatpak Setup
+        self.total_steps = len(queue) + 3
 
-    def log(self, text):
-        GLib.idle_add(self.on_log, text)
-
-    def run_cmd(self, command):
-        # Automatyka YAY
-        if "yay" in command and "--answer" not in command:
-            command = command.replace("yay", "yay --answerdiff All --answerclean All --noconfirm")
-
-        # Automatyka PACMAN (poprawione)
-        if "pacman -S" in command and "--needed" not in command:
-             if "-Syu" in command: command = command.replace("-Syu", "-Syu --needed")
-             elif "-Sy" in command: command = command.replace("-Sy", "-Sy --needed")
-             elif "-S" in command: command = command.replace("-S", "-S --needed")
-
-        # Obsługa SUDO
-        use_shell = False
-        if command.startswith("sudo"):
-            full_cmd = f"echo '{self.password}' | {command.replace('sudo', 'sudo -S')}"
+    def run_cmd(self, cmd_list, use_shell=False):
+        """Uruchamia komendę z sudo"""
+        if cmd_list[0] == "sudo":
+            # Przekazanie hasła do sudo -S
+            cmd_str = " ".join(cmd_list).replace("sudo", "sudo -S")
+            full_cmd = f"echo '{self.password}' | {cmd_str}"
             use_shell = True
         else:
-            full_cmd = command.split()
-
-        self.log(f"\n➜ {command}")
+            full_cmd = cmd_list
 
         try:
-            process = subprocess.Popen(
+            # Używamy subprocess.run i ignorujemy wyjście (chyba że błąd)
+            subprocess.run(
                 full_cmd,
                 shell=use_shell,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE # Zbieramy błędy w razie czego
             )
-            for line in process.stdout:
-                self.log(line.strip())
-            process.wait()
-        except Exception as e:
-            self.log(f"[!!!] Błąd: {str(e)}")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Błąd komendy: {full_cmd}")
+            return False
 
-    def configure_refind(self):
-        # Twoja logika rEFInd z listy "Do zrobienia"
-        self.log("\n--- KONFIGURACJA REFIND & GPU ---")
-        conf_path = "/boot/refind_linux.conf"
-        uuid = "80cae5af-59e1-4176-9e2d-40232d3ea04d"
-        params = "rw nvidia-drm.modeset=1 video=HDMI-A-1:d"
+    def setup_flatpak(self):
+        """Instaluje flatpak i dodaje repozytorium Flathub"""
+        # 1. Instalacja pakietu flatpak przez pacmana
+        if not self.run_cmd(["sudo", "pacman", "-S", "flatpak", "--noconfirm", "--needed"]):
+            return False
 
-        if os.path.exists(conf_path):
-            self.log(f"Znaleziono {conf_path}. Dodawanie wpisu...")
-            # Tutaj normalnie byłaby edycja pliku. Na razie symulacja dla bezpieczeństwa.
-            self.log(f"[FIX] UUID: {uuid}")
-            self.log(f"[FIX] GPU: {params}")
+        # 2. Dodanie repozytorium Flathub (system-wide)
+        # Nie wymaga sudo jeśli robimy --user, ale dla instalatora systemowego lepiej dać sudo
+        # flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        cmd = ["sudo", "flatpak", "remote-add", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"]
+        return self.run_cmd(cmd)
+
+    def install_pkg(self, pkg_info):
+        """Rozdziela instalację na Pacman / Yay / Flatpak"""
+        pkg = pkg_info['pkg']
+        source = pkg_info.get('source', 'pacman') # Domyślnie pacman
+
+        if source == "flatpak":
+            # Instalacja Flatpak (bez potwierdzeń -y)
+            # Używamy sudo, żeby instalować systemowo (dla wszystkich użytkowników)
+            cmd = ["sudo", "flatpak", "install", "flathub", pkg, "-y"]
+
+        elif source == "aur":
+            # Instalacja YAY
+            cmd = ["yay", "-S", pkg, "--noconfirm", "--answerdiff", "None", "--answerclean", "None"]
+
         else:
-            self.log(f"Nie znaleziono rEFInd ({conf_path}) - pomijam.")
+            # Instalacja PACMAN (domyślna)
+            cmd = ["sudo", "pacman", "-S", pkg, "--noconfirm", "--needed"]
+
+        return self.run_cmd(cmd)
 
     def run(self):
-        self.log("--- START INSTALATORA ARCH ---")
+        current_step = 0
 
-        # 1. Repo update
-        self.run_cmd("sudo pacman -Sy")
+        # 1. Update repozytoriów
+        self.on_progress(0, "Aktualizacja repozytoriów (Pacman)...")
+        self.run_cmd(["sudo", "pacman", "-Sy"])
+        current_step += 1
 
-        # 2. Git & Base
-        self.run_cmd("sudo pacman -S git base-devel")
+        # 2. Instalacja Git/Base-devel (wymagane do AUR)
+        self.on_progress(10, "Przygotowanie AUR (Git, Base-devel)...")
+        self.run_cmd(["sudo", "pacman", "-S", "git", "base-devel", "--noconfirm", "--needed"])
+        current_step += 1
 
-        # 3. Tweaki (rEFInd)
-        self.configure_refind()
+        # 3. Konfiguracja Flatpak
+        self.on_progress(15, "Konfiguracja Flatpak i Flathub...")
+        if not self.setup_flatpak():
+            print("Nie udało się skonfigurować Flatpaka!")
+        current_step += 1
 
-        # 4. Koniec
-        self.log(">> Instalacja zakończona sukcesem!")
-        GLib.idle_add(self.on_finish)
+        # 4. Instalacja z kolejki
+        success = True
+        for item in self.queue:
+            percent = int((current_step / self.total_steps) * 100)
 
+            # Ładny opis co się dzieje
+            source_name = item.get('source', 'pacman').upper()
+            self.on_progress(percent, f"Instalowanie [{source_name}]: {item['name']}...")
 
-# --- 2. UI: WYGLĄD LINEXIN (LIBADWAITA) ---
+            if not self.install_pkg(item):
+                print(f"Błąd instalacji: {item['name']}")
+                success = False
+
+            current_step += 1
+
+        self.on_progress(100, "Finalizowanie...")
+        GLib.idle_add(self.on_finish, success)
+
+# ==============================================================================
+# 🎨 INTERFEJS UŻYTKOWNIKA (GUI)
+# ==============================================================================
 
 class InstallerWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Arch Setup")
-        self.set_default_size(800, 600)
-
-        # STYL CSS (FIOLETOWY)
+        self.set_default_size(900, 650)
         self.load_css()
 
+        # Przechowywanie stanu
+        self.selected_software = []
+        self.selected_de = []
+
+        # Główny kontener nawigacji
         self.stack = Adw.ViewStack()
+
+        # Pasek tytułu
         self.header = Adw.HeaderBar()
+        self.header.set_show_end_title_buttons(True)
+        self.header.set_show_start_title_buttons(False)
 
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         main_box.append(self.header)
         main_box.append(self.stack)
         self.set_content(main_box)
 
-        # --- EKRAN 1: POWITANIE (StatusPage) ---
-        self.page_welcome = Adw.StatusPage()
-        self.load_arch_logo() # Duże logo
-
-        self.page_welcome.set_title("Arch Post-Install")
-        self.page_welcome.set_description("Automatyczna konfiguracja systemu, sterowników GPU i rEFInd.\nKliknij poniżej, aby rozpocząć.")
-
-        # FIOLETOWY PRZYCISK
-        self.btn_start = Gtk.Button(label="ROZPOCZNIJ INSTALACJĘ")
-        self.btn_start.add_css_class("pill")      # Zaokrąglony
-        self.btn_start.add_css_class("purple-btn") # Nasz własny styl!
-        self.btn_start.set_size_request(250, 60)
-        self.btn_start.set_halign(Gtk.Align.CENTER)
-        self.btn_start.connect("clicked", self.on_start_clicked)
-
-        self.page_welcome.set_child(self.btn_start)
-
-        # --- EKRAN 2: KONSOLA ---
-        self.page_progress = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
-        self.page_progress.set_margin_top(30)
-        self.page_progress.set_margin_bottom(30)
-        self.page_progress.set_margin_start(30)
-        self.page_progress.set_margin_end(30)
-
-        # Status
-        self.lbl_status = Gtk.Label(label="Inicjalizacja...")
-        self.lbl_status.add_css_class("title-2")
-        self.page_progress.append(self.lbl_status)
-
-        # Konsola
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-
-        self.console_view = Gtk.TextView()
-        self.console_view.set_editable(False)
-        self.console_view.set_monospace(True)
-        self.console_view.set_wrap_mode(Gtk.WrapMode.WORD)
-        self.console_view.add_css_class("card")
-        self.console_view.set_left_margin(15)
-        self.console_view.set_top_margin(15)
-
-        self.text_buffer = self.console_view.get_buffer()
-        scrolled.set_child(self.console_view)
-
-        self.page_progress.append(scrolled)
-
-        # Dodanie do stosu
-        self.stack.add_named(self.page_welcome, "welcome")
-        self.stack.add_named(self.page_progress, "progress")
-        self.stack.set_visible_child_name("welcome")
+        # Inicjalizacja stron
+        self.init_welcome_page()
+        self.init_software_page()
+        self.init_de_page()
+        self.init_progress_page()
+        self.init_finish_page()
 
     def load_css(self):
-        css_provider = Gtk.CssProvider()
-        # FIOLETOWY KOLOR (#cba6f7)
+        """Style CSS"""
+        provider = Gtk.CssProvider()
         css = b"""
+        .blue-btn {
+            background-color: #3584e4;
+            color: white;
+            font-weight: bold;
+            border-radius: 9999px;
+            padding: 10px 40px;
+        }
+        .blue-btn:hover { background-color: #1c71d8; }
+
         .purple-btn {
             background-color: #cba6f7;
             color: #1e1e2e;
-            font-weight: 800;
-            font-size: 16px;
+            font-weight: bold;
+            border-radius: 9999px;
+            padding: 10px 40px;
         }
-        .purple-btn:hover {
-            background-color: #d8b4fe;
+        .purple-btn:hover { background-color: #b492e0; }
+
+        .violet-progress progress {
+            background-color: #cba6f7;
+            border-radius: 6px;
+            min-height: 12px;
+        }
+        .violet-progress trough {
+            background-color: #313244;
+            border-radius: 6px;
+            min-height: 12px;
         }
         """
-        css_provider.load_from_data(css)
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(),
-            css_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
+        provider.load_from_data(css)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    def load_arch_logo(self):
-        logo_path = "/tmp/arch_logo.svg"
-        url = "https://archlinux.org/static/logos/archlinux-logo-dark-scalable.518881f04ca9.svg"
-        try:
-            if not os.path.exists(logo_path):
-                urllib.request.urlretrieve(url, logo_path)
-            texture = Gdk.Texture.new_from_file(Gio.File.new_for_path(logo_path))
-            self.page_welcome.set_paintable(texture)
-        except:
-            self.page_welcome.set_icon_name("system-software-install-symbolic")
+    def get_arch_logo(self):
+        path = "/tmp/arch_logo.svg"
+        if not os.path.exists(path):
+            try:
+                urllib.request.urlretrieve("https://archlinux.org/static/logos/archlinux-logo-dark-scalable.518881f04ca9.svg", path)
+            except: pass
 
-    def on_start_clicked(self, button):
-        self.ask_password()
+        if os.path.exists(path):
+            return Gdk.Texture.new_from_file(Gio.File.new_for_path(path))
+        return None
 
-    def ask_password(self):
-        dialog = Adw.MessageDialog(
-            transient_for=self,
-            heading="Autoryzacja",
-            body="Wymagane uprawnienia administratora."
-        )
+    # --- STRONA 1: POWITANIE ---
+    def init_welcome_page(self):
+        page = Adw.StatusPage()
+        page.set_title("Witaj w Instalatorze")
+        page.set_description("Skonfiguruj swój system Arch Linux krok po kroku.")
+
+        logo = self.get_arch_logo()
+        if logo: page.set_paintable(logo)
+        else: page.set_icon_name("system-software-install-symbolic")
+
+        btn = Gtk.Button(label="Rozpocznij")
+        btn.add_css_class("blue-btn")
+        btn.set_halign(Gtk.Align.CENTER)
+        btn.connect("clicked", lambda x: self.stack.set_visible_child_name("software"))
+
+        page.set_child(btn)
+        self.stack.add_named(page, "welcome")
+
+    # --- STRONA 2: WYBÓR SOFTU ---
+    def init_software_page(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Wybór Oprogramowania")
+
+        group = Adw.PreferencesGroup(title="Aplikacje (Flatpak & AUR)")
+
+        self.soft_checks = {}
+
+        for item in SOFTWARE_LIST:
+            # Podpisujemy czy to Flatpak czy AUR
+            src_label = item.get('source', 'pacman').upper()
+            row = Adw.ActionRow(title=item['name'], subtitle=f"Źródło: {src_label} ({item['pkg']})")
+
+            check = Gtk.CheckButton()
+            check.set_active(item['checked'])
+            check.set_valign(Gtk.Align.CENTER)
+
+            row.add_suffix(check)
+            row.set_activatable_widget(check)
+
+            group.add(row)
+            self.soft_checks[item['pkg']] = (check, item)
+
+        page.add(group)
+
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        btn_box.set_halign(Gtk.Align.CENTER)
+        btn_box.set_margin_top(20)
+        btn_box.set_margin_bottom(20)
+
+        btn = Gtk.Button(label="Dalej")
+        btn.add_css_class("blue-btn")
+        btn.connect("clicked", lambda x: self.stack.set_visible_child_name("desktop"))
+
+        btn_box.append(btn)
+        page.add(btn_box)
+
+        self.stack.add_named(page, "software")
+
+    # --- STRONA 3: WYBÓR DE ---
+    def init_de_page(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Środowisko Graficzne")
+
+        group = Adw.PreferencesGroup(title="Środowisko Pulpitu")
+
+        self.de_checks = {}
+
+        for item in DE_LIST:
+            row = Adw.ActionRow(title=item['name'])
+            check = Gtk.CheckButton()
+            check.set_valign(Gtk.Align.CENTER)
+
+            row.add_suffix(check)
+            row.set_activatable_widget(check)
+
+            group.add(row)
+            self.de_checks[item['pkg']] = (check, item)
+
+        page.add(group)
+
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        btn_box.set_halign(Gtk.Align.CENTER)
+        btn_box.set_margin_top(20)
+
+        btn = Gtk.Button(label="Zainstaluj")
+        btn.add_css_class("blue-btn")
+        btn.connect("clicked", self.on_install_clicked)
+
+        btn_box.append(btn)
+        page.add(btn_box)
+
+        self.stack.add_named(page, "desktop")
+
+    # --- STRONA 4: PROGRESS ---
+    def init_progress_page(self):
+        self.page_progress = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=30)
+        self.page_progress.set_valign(Gtk.Align.CENTER)
+        self.page_progress.set_halign(Gtk.Align.CENTER)
+        self.page_progress.set_hexpand(True)
+        self.page_progress.set_vexpand(True)
+
+        self.prog_logo = Gtk.Image()
+        self.prog_logo.set_pixel_size(150)
+        texture = self.get_arch_logo()
+        if texture: self.prog_logo.set_paintable(texture)
+        else: self.prog_logo.set_icon_name("system-software-install-symbolic")
+
+        self.progress_bar = Gtk.ProgressBar()
+        self.progress_bar.add_css_class("violet-progress")
+        self.progress_bar.set_size_request(400, 20)
+
+        self.progress_label = Gtk.Label(label="0%")
+        self.progress_label.add_css_class("title-2")
+
+        self.status_text = Gtk.Label(label="Inicjalizacja...")
+        self.status_text.add_css_class("caption")
+
+        self.page_progress.append(self.prog_logo)
+        self.page_progress.append(self.progress_bar)
+        self.page_progress.append(self.progress_label)
+        self.page_progress.append(self.status_text)
+
+        self.stack.add_named(self.page_progress, "progress")
+
+    # --- STRONA 5: FINISH ---
+    def init_finish_page(self):
+        self.page_finish = Adw.StatusPage()
+        self.stack.add_named(self.page_finish, "finish")
+
+    # --- LOGIKA ---
+    def on_install_clicked(self, btn):
+        install_queue = []
+
+        # Soft
+        for pkg, (check, info) in self.soft_checks.items():
+            if check.get_active():
+                install_queue.append(info)
+
+        # DE
+        for pkg, (check, info) in self.de_checks.items():
+            if check.get_active():
+                install_queue.append(info)
+
+        self.ask_password(install_queue)
+
+    def ask_password(self, queue):
+        dialog = Adw.MessageDialog(transient_for=self, heading="Autoryzacja", body="Wymagane hasło sudo.")
         dialog.add_response("cancel", "Anuluj")
-        dialog.add_response("ok", "Zatwierdź")
-        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED) # To musi być domyślne, ale nasz CSS nadpisze przyciski w oknie głównym
+        dialog.add_response("ok", "Instaluj")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.pwd_entry = Gtk.PasswordEntry()
-        self.pwd_entry.set_property("placeholder-text", "Hasło sudo")
+        self.pwd_entry.set_property("placeholder-text", "Hasło")
         self.pwd_entry.connect("activate", lambda w: dialog.response("ok"))
         box.append(self.pwd_entry)
-
         dialog.set_extra_child(box)
-        dialog.connect("response", self.on_pwd_response)
+
+        dialog.connect("response", lambda d, r: self.start_install(d, r, queue))
         dialog.present()
 
-    def on_pwd_response(self, dialog, response):
-        if response == "ok":
-            pwd = self.pwd_entry.get_text()
+    def start_install(self, dialog, response, queue):
+        if response != "ok":
             dialog.close()
-            self.stack.set_visible_child_name("progress")
-            self.lbl_status.set_text("Praca w toku...")
+            return
 
-            worker = InstallWorker(pwd, self.append_log, self.on_finish)
-            worker.start()
+        pwd = self.pwd_entry.get_text()
+        dialog.close()
+
+        self.stack.set_visible_child_name("progress")
+
+        worker = InstallWorker(pwd, queue, self.update_progress, self.finish_install)
+        worker.start()
+
+    def update_progress(self, percent, text):
+        def _update():
+            self.progress_bar.set_fraction(percent / 100)
+            self.progress_label.set_text(f"{percent}%")
+            self.status_text.set_text(text)
+            return False
+        GLib.idle_add(_update)
+
+    def finish_install(self, success):
+        self.stack.set_visible_child_name("finish")
+
+        if success:
+            self.page_finish.set_title("Instalacja Ukończona")
+            self.page_finish.set_icon_name("emblem-ok-symbolic")
+            self.page_finish.set_description("Wszystkie pakiety zostały zainstalowane.")
+
+            btn = Gtk.Button(label="Uruchom ponownie")
+            btn.add_css_class("purple-btn")
+            btn.set_halign(Gtk.Align.CENTER)
+            btn.connect("clicked", self.reboot_system)
+            self.page_finish.set_child(btn)
         else:
-            dialog.close()
+            self.page_finish.set_title("Wystąpił Błąd")
+            self.page_finish.set_icon_name("dialog-error-symbolic")
+            self.page_finish.set_description("Sprawdź połączenie z internetem.")
 
-    def append_log(self, text):
-        end_iter = self.text_buffer.get_end_iter()
-        self.text_buffer.insert(end_iter, text + "\n")
-        # Auto-scroll
-        adj = self.console_view.get_parent().get_vadjustment()
-        adj.set_value(adj.get_upper())
+            btn = Gtk.Button(label="Zamknij program")
+            btn.add_css_class("purple-btn")
+            btn.set_halign(Gtk.Align.CENTER)
+            btn.connect("clicked", lambda x: self.close())
+            self.page_finish.set_child(btn)
 
-    def on_finish(self):
-        self.lbl_status.set_text("Gotowe!")
+    def reboot_system(self, btn):
+        subprocess.run(["systemctl", "reboot"])
 
 class InstallerApp(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="com.arch.setup", flags=Gio.ApplicationFlags.FLAGS_NONE)
+        super().__init__(application_id="com.arch.wizard", flags=Gio.ApplicationFlags.FLAGS_NONE)
 
     def do_activate(self):
         win = self.props.active_window
-        if not win:
-            win = InstallerWindow(self)
+        if not win: win = InstallerWindow(self)
         win.present()
 
 if __name__ == "__main__":

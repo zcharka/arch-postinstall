@@ -6,9 +6,9 @@ xdata = pkgtype=pkg
 pkgver = 1.0-1
 pkgdesc = Mój osobisty konfigurator Arch Linux (KDE/GNOME)
 url = https://github.com/TWÓJ_NICK/arch-postinstall
-builddate = 1771918610
+builddate = 1771942994
 packager = Unknown Packager
-size = 21886
+size = 22791
 arch = any
 license = MIT
 depend = python

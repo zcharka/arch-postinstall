@@ -1,30 +1,29 @@
-# Maintainer: Sebastian zcharkayt@gmail.com
+# Maintainer: Sebastian <twoj@email.com>
 pkgname=arch-postinstall
-pkgver=1.0
+pkgver=2.0
 pkgrel=1
-pkgdesc="Mój osobisty konfigurator Arch Linux (KDE/GNOME)"
+pkgdesc="Arch Linux Post-Install Wizard (GTK4/Libadwaita)"
 arch=('any')
-url="https://github.com/TWÓJ_NICK/arch-postinstall"
-license=('MIT')
-# Zależności, które makepkg zainstaluje sam
-depends=('python' 'python-pyqt6' 'python-requests' 'yay')
+url="https://github.com/zcharka/arch-postinstall"
+license=('GPL')
+# Tutaj są nowe zależności dla GTK4 i Libadwaita
+depends=('python' 'python-gobject' 'gtk4' 'libadwaita' 'flatpak')
 makedepends=('git')
-# Ponieważ to repo prywatne, nie używamy source=(), tylko kopiujemy lokalne pliki
-options=('!strip')
+source=("git+https://github.com/zcharka/arch-postinstall.git")
+md5sums=('SKIP')
 
 package() {
-    # 1. Tworzymy folder w /opt/
+    # Tworzymy foldery systemowe
     mkdir -p "$pkgdir/opt/$pkgname"
-
-    # 2. Kopiujemy kod źródłowy do systemu
-    cp -r "$startdir/src" "$pkgdir/opt/$pkgname/"
-
-    # 3. Tworzymy skrypt uruchamiający w /usr/bin/
     mkdir -p "$pkgdir/usr/bin"
-    echo "#!/bin/bash" > "$pkgdir/usr/bin/arch-setup"
-    # Uruchamiamy przez pythona systemowego
-    echo "python /opt/$pkgname/src/ui/main_window.py" >> "$pkgdir/usr/bin/arch-setup"
 
-    # 4. Nadajemy prawa wykonywalności
+    # Kopiujemy pliki źródłowe do /opt/arch-postinstall
+    cp -r "$srcdir/$pkgname/src" "$pkgdir/opt/$pkgname/"
+
+    # Tworzymy plik uruchamiający (skrót)
+    echo "#!/bin/sh" > "$pkgdir/usr/bin/arch-setup"
+    echo "exec python /opt/$pkgname/src/ui/main_window.py" >> "$pkgdir/usr/bin/arch-setup"
+
+    # Nadajemy uprawnienia wykonywania
     chmod +x "$pkgdir/usr/bin/arch-setup"
 }
