@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Presets
+Comment=Zmień wygląd systemu (Arch Presets)
+Exec=arch-presets
+Icon=preferences-desktop-theme
+Terminal=false
+Type=Application
+Categories=Settings;GTK;
