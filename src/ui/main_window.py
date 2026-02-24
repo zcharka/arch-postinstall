@@ -85,8 +85,6 @@ class InstallWorker(threading.Thread):
             return False
 
         # 2. Dodanie repozytorium Flathub (system-wide)
-        # Nie wymaga sudo jeśli robimy --user, ale dla instalatora systemowego lepiej dać sudo
-        # flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
         cmd = ["sudo", "flatpak", "remote-add", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"]
         return self.run_cmd(cmd)
 
@@ -97,7 +95,6 @@ class InstallWorker(threading.Thread):
 
         if source == "flatpak":
             # Instalacja Flatpak (bez potwierdzeń -y)
-            # Używamy sudo, żeby instalować systemowo (dla wszystkich użytkowników)
             cmd = ["sudo", "flatpak", "install", "flathub", pkg, "-y"]
 
         elif source == "aur":
@@ -251,12 +248,12 @@ class InstallerWindow(Adw.ApplicationWindow):
         page = Adw.PreferencesPage()
         page.set_title("Wybór Oprogramowania")
 
-        group = Adw.PreferencesGroup(title="Aplikacje (Flatpak & AUR)")
+        # POPRAWKA 1: Zmiana znaku '&' na 'i' w tytule grupy
+        group = Adw.PreferencesGroup(title="Aplikacje (Flatpak i AUR)")
 
         self.soft_checks = {}
 
         for item in SOFTWARE_LIST:
-            # Podpisujemy czy to Flatpak czy AUR
             src_label = item.get('source', 'pacman').upper()
             row = Adw.ActionRow(title=item['name'], subtitle=f"Źródło: {src_label} ({item['pkg']})")
 
@@ -272,6 +269,7 @@ class InstallerWindow(Adw.ApplicationWindow):
 
         page.add(group)
 
+        # Przycisk Dalej
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         btn_box.set_halign(Gtk.Align.CENTER)
         btn_box.set_margin_top(20)
@@ -282,7 +280,11 @@ class InstallerWindow(Adw.ApplicationWindow):
         btn.connect("clicked", lambda x: self.stack.set_visible_child_name("desktop"))
 
         btn_box.append(btn)
-        page.add(btn_box)
+
+        # POPRAWKA 2: Opakowanie przycisku w grupę dla Adw.PreferencesPage
+        btn_group = Adw.PreferencesGroup()
+        btn_group.add(btn_box)
+        page.add(btn_group)
 
         self.stack.add_named(page, "software")
 
@@ -308,6 +310,7 @@ class InstallerWindow(Adw.ApplicationWindow):
 
         page.add(group)
 
+        # Przycisk Zainstaluj
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         btn_box.set_halign(Gtk.Align.CENTER)
         btn_box.set_margin_top(20)
@@ -317,7 +320,11 @@ class InstallerWindow(Adw.ApplicationWindow):
         btn.connect("clicked", self.on_install_clicked)
 
         btn_box.append(btn)
-        page.add(btn_box)
+
+        # POPRAWKA 2: Opakowanie przycisku w grupę
+        btn_group = Adw.PreferencesGroup()
+        btn_group.add(btn_box)
+        page.add(btn_group)
 
         self.stack.add_named(page, "desktop")
 

@@ -3,16 +3,17 @@
 pkgname = arch-postinstall
 pkgbase = arch-postinstall
 xdata = pkgtype=pkg
-pkgver = 1.0-1
-pkgdesc = Mój osobisty konfigurator Arch Linux (KDE/GNOME)
-url = https://github.com/TWÓJ_NICK/arch-postinstall
-builddate = 1771942994
+pkgver = 2.0-1
+pkgdesc = Arch Linux Post-Install Wizard (GTK4/Libadwaita)
+url = https://github.com/zcharka/arch-postinstall
+builddate = 1771944076
 packager = Unknown Packager
-size = 22791
+size = 28582
 arch = any
-license = MIT
+license = GPL
 depend = python
-depend = python-pyqt6
-depend = python-requests
-depend = yay
+depend = python-gobject
+depend = gtk4
+depend = libadwaita
+depend = flatpak
 makedepend = git
