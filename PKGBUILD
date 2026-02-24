@@ -26,8 +26,8 @@ package() {
     # 2. Presets (Nowa nazwa binarki)
     echo "#!/bin/sh" > "$pkgdir/usr/bin/arch-presets"
     echo "exec python /opt/$pkgname/src/ui/theme_switcher.py" >> "$pkgdir/usr/bin/arch-presets"
-    chmod +x "$pkgdir/usr/bin/arch-presets"
+    chmod +x "$pkgdir/usr/bin/presets"
 
     # 3. Ikonka
-    install -Dm644 "$srcdir/$pkgname/src/linexin-themes.desktop" "$pkgdir/usr/share/applications/arch-presets.desktop"
+    install -Dm644 "$srcdir/$pkgname/src/linexin-themes.desktop" "$pkgdir/usr/share/applications/presets.desktop"
 }
