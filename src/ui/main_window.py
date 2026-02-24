@@ -20,6 +20,7 @@ SOFTWARE_LIST = [
     {"name": "Discord",          "pkg": "com.discordapp.Discord",      "source": "flatpak", "checked": True},
     {"name": "Steam",            "pkg": "com.valvesoftware.Steam",     "source": "flatpak", "checked": False},
     {"name": "DaVinci Resolve",  "pkg": "davinci-resolve",             "source": "aur",     "checked": False},
+    {"name": "Prism Launcher",   "pkg": "org.prismlauncher.PrismLauncher",         "source": "flatpak", "checked": True},
 ]
 
 # Lista podstawowych środowisk
@@ -208,7 +209,7 @@ class InstallerWindow(Adw.ApplicationWindow):
         provider = Gtk.CssProvider()
         css = b"""
         .blue-btn { background-color: #3584e4; color: white; font-weight: bold; border-radius: 9999px; padding: 10px 40px; }
-        .purple-btn { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; border-radius: 9999px; padding: 10px 40px; }
+        .purple-btn { background-color: #cba6f7; color: #8A2BE2; font-weight: bold; border-radius: 9999px; padding: 10px 40px; }
         .purple-card { background-color: #313244; border-radius: 12px; padding: 20px; margin: 10px; }
         .preset-title { font-size: 18px; font-weight: bold; color: #cba6f7; }
         .violet-progress progress { background-color: #cba6f7; border-radius: 6px; min-height: 12px; }
@@ -220,7 +221,7 @@ class InstallerWindow(Adw.ApplicationWindow):
     # --- STRONY ---
     def init_welcome(self):
         page = Adw.StatusPage()
-        page.set_title("Witaj w Instalatorze")
+        page.set_title("Witaj w RatInstall")
         page.set_description("Wybierz aplikacje, środowisko i styl.")
         page.set_icon_name("system-software-install-symbolic")
 
