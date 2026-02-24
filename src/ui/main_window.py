@@ -119,7 +119,7 @@ class InstallWorker(QThread):
         super().__init__()
         self.password = password
 
-    def run_cmd(self, command, use_shell=True:
+    def run_cmd(self, command, use_shell=True):
         if command.startswith("sudo"):
             full_cmd = f"echo '{self.password}' | {command.replace('sudo', 'sudo -S')}"
             use_shell = True
