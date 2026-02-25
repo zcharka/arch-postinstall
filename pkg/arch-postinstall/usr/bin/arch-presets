@@ -1,0 +1,2 @@
+#!/bin/sh
+exec python /opt/arch-postinstall/ui/theme_switcher.py
