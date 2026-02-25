@@ -10,24 +10,42 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Gio, Gdk
 
+import sys
+import os
+import subprocess
+import threading
+import urllib.request
+import time
+import gi
+
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Gtk, Adw, GLib, Gio, Gdk
+
 # ==============================================================================
-# 🔧 KONFIGURACJA
+# 🔧 KONFIGURACJA OPROGRAMOWANIA
 # ==============================================================================
 
 SOFTWARE_LIST = [
     {"name": "Firefox",          "pkg": "org.mozilla.firefox",         "source": "flatpak", "checked": True},
-    {"name": "Visual Studio Code", "pkg": "com.visualstudio.code",     "source": "flatpak", "checked": True},
+    {"name": "Zen Browser",      "pkg": "io.github.zen_browser.zen",   "source": "flatpak", "checked": True},
     {"name": "Discord",          "pkg": "com.discordapp.Discord",      "source": "flatpak", "checked": True},
-    {"name": "Steam",            "pkg": "com.valvesoftware.Steam",     "source": "flatpak", "checked": False},
+    {"name": "Visual Studio Code", "pkg": "com.visualstudio.code",     "source": "flatpak", "checked": True},
+    {"name": "GNOME Extensions", "pkg": "org.gnome.Extensions",        "source": "flatpak", "checked": True},
+    {"name": "GNOME Tweaks",     "pkg": "gnome-tweaks",                "source": "pacman",  "checked": True},
+    {"name": "Steam",            "pkg": "com.valvesoftware.Steam",     "source": "flatpak", "checked": True},
+    {"name": "Lutris",           "pkg": "net.lutris.Lutris",           "source": "flatpak", "checked": False},
+    {"name": "Wine (System)",    "pkg": "wine",                        "source": "pacman",  "checked": False},
+    {"name": "ProtonUp-Qt",      "pkg": "net.davidotek.pupgui2",       "source": "flatpak", "checked": False},
+    {"name": "Prism Launcher",   "pkg": "org.prismlauncher.PrismLauncher", "source": "flatpak", "checked": True},
     {"name": "DaVinci Resolve",  "pkg": "davinci-resolve",             "source": "aur",     "checked": False},
-    {"name": "Prism Launcher",  "pkg": "org.prismlauncher.PrismLauncher",             "source": "flatpak",     "checked": True},
 ]
 
 # Lista podstawowych środowisk
 DE_LIST = [
     {"name": "KDE Plasma 6",      "pkg": "plasma-meta",       "id": "kde"},
     {"name": "GNOME",             "pkg": "gnome",             "id": "gnome"},
-    {"name": "Hyperland",         "pkg": "hyprland",          "id": "hypr"},
+    {"name": "Hyprland",          "pkg": "hyprland",          "id": "hypr"},
 ]
 
 # ==============================================================================
