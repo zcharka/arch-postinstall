@@ -62,7 +62,7 @@ SOFTWARE_LIST = [
 
 DE_LIST = [
     {"name": "KDE Plasma 6",      "pkg": "plasma-meta",       "id": "kde"},
-    {"name": "GNOME",             "pkg": "gnome",             "id": "gnome"},
+    {"name": "GNOME",             "pkg": "gnome-desktop",             "id": "gnome-desktop"},
     {"name": "Hyprland",          "pkg": "hyprland",          "id": "hypr"},
 ]
 
