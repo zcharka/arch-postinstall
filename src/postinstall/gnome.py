@@ -1,26 +1,16 @@
 import os
 
-# --- FUNKCJE INSTALACYJNE GNOME ---
-
 def install_gnome_deps(runner):
-    runner("echo 'Instaluję narzędzia GNOME i zależności...'")
+    runner("echo '--- INSTALACJA NARZĘDZI GNOME ---'")
 
-    # 1. Pakiety oficjalne (potrzebne do motywów i extensions)
-    # gnome-shell-extensions jest kluczowe dla user-theme
-    base_pkgs = [
-        "gnome-tweaks",
-        "gnome-browser-connector",
-        "gnome-shell-extensions",
-        "git",
-        "curl",
-        "wget"
-    ]
-    runner(f"sudo pacman -S --noconfirm --needed {' '.join(base_pkgs)}")
+    # 1. Podstawowe narzędzia i zależności do budowania
+    # sassc jest krytyczny dla motywów GTK!
+    runner("sudo pacman -S --noconfirm --needed gnome-tweaks gnome-browser-connector gnome-shell-extensions git base-devel sassc wget curl")
 
-    runner("echo 'Instaluję rozszerzenia z AUR...'")
+    runner("echo '--- INSTALACJA ROZSZERZEŃ Z AUR (YAY) ---'")
 
-    # 2. Lista rozszerzeń z Twojego setup.sh
-    aur_extensions = [
+    # Twoja pełna lista rozszerzeń + motywy
+    extensions = [
         "gnome-shell-extension-accent-icons-git",
         "gnome-shell-extension-appindicator",
         "gnome-shell-extension-blur-my-shell",
@@ -32,94 +22,76 @@ def install_gnome_deps(runner):
         "gnome-shell-extension-user-theme",
         "gnome-shell-extension-removable-drive-menu",
         "gnome-shell-extension-archlinux-updates-indicator",
-        # Dodajemy kursor z AUR, jeśli nie ma go w oficjalnych
+        # Kursor i motywy
         "bibata-cursor-theme-bin"
     ]
 
-    pkgs_str = " ".join(aur_extensions)
-    runner(f"yay -S --noconfirm --needed {pkgs_str}")
+    # Instalacja yay (jednym ciągiem)
+    pkg_str = " ".join(extensions)
+    runner(f"yay -S --noconfirm --needed --answerdiff=None --answerclean=None {pkg_str}")
 
-def install_colloid_themes(runner):
-    """
-    Klonuje i instaluje motywy Colloid bezpośrednio z GitHuba, tak jak w setup.sh
-    """
-    runner("echo 'Pobieranie i instalacja motywu GTK Colloid...'")
+def enable_extensions(runner):
+    runner("echo '--- AKTYWACJA ROZSZERZEŃ ---'")
 
-    # Używamy folderu tymczasowego
-    tmp_dir = "/tmp/arch_postinstall_colloid"
-    runner(f"mkdir -p {tmp_dir}")
-
-    # 1. Motyw GTK
-    cmds_gtk = [
-        f"git clone https://github.com/vinceliuice/Colloid-gtk-theme.git {tmp_dir}/gtk",
-        f"sh {tmp_dir}/gtk/install.sh -t purple -s standard",
-        f"rm -rf {tmp_dir}/gtk"
+    # Lista UUID rozszerzeń odpowiadająca paczkom powyżej.
+    # GNOME wymaga podania ID, aby je włączyć z konsoli.
+    uuids = [
+        "user-theme@gnome-shell-extensions.gcampax.github.com",
+        "dash-to-dock@micxgx.gmail.com",
+        "blur-my-shell@aunetx",
+        "appindicatorsupport@rgcjonas.gmail.com",
+        "gsconnect@andyholmes.github.io",
+        "ding@rastersoft.com", # Desktop Icons NG
+        "quick-settings-audio-panel@rayzeq.github.io",
+        "rounded-window-corners@fxgn",
+        "drive-menu@gnome-shell-extensions.gcampax.github.com",
+        "arch-update@fernandovan", # ID dla archlinux-updates-indicator
+        "accent-icons@deminder" # ID dla accent-icons (może się różnić zależnie od forka)
     ]
-    for cmd in cmds_gtk:
-        runner(cmd)
 
-    runner("echo 'Pobieranie i instalacja ikon Colloid...'")
-
-    # 2. Ikony
-    cmds_icons = [
-        f"git clone https://github.com/vinceliuice/Colloid-icon-theme.git {tmp_dir}/icons",
-        f"sh {tmp_dir}/icons/install.sh -t purple",
-        f"rm -rf {tmp_dir}/icons"
-    ]
-    for cmd in cmds_icons:
-        runner(cmd)
-
-    runner(f"rm -rf {tmp_dir}")
-
-def setup_wallpaper(runner):
-    """
-    Pobiera tapetę z Imgur i ustawia ją w GNOME
-    """
-    runner("echo 'Ustawiam tapetę...'")
-
-    url = "https://i.imgur.com/Y9X3VQz.jpeg"
-    dest_dir = os.path.expanduser("~/Obrazy") # Python rozwinie ~ do /home/user
-    file_name = "tapeta_arch.jpg"
-    full_path = os.path.join(dest_dir, file_name)
-
-    # Tworzymy folder i pobieramy
-    runner(f"mkdir -p {dest_dir}")
-    runner(f"curl -L '{url}' -o '{full_path}'")
-
-    # Ustawiamy w gsettings (file:// jest wymagane)
-    uri_path = f"file://{full_path}"
-
-    settings_cmds = [
-        f"gsettings set org.gnome.desktop.background picture-uri '{uri_path}'",
-        f"gsettings set org.gnome.desktop.background picture-uri-dark '{uri_path}'",
-        "gsettings set org.gnome.desktop.background picture-options 'zoom'"
-    ]
-    for cmd in settings_cmds:
-        runner(cmd)
+    for uuid in uuids:
+        # Uruchamiamy bez sudo (jako użytkownik), aby zmienić ustawienia dla sesji
+        # Ignorujemy błędy, jeśli UUID jest inny lub rozszerzenie się jeszcze nie załadowało
+        runner(f"gnome-extensions enable {uuid} || true")
 
 def setup_appearance(runner):
-    runner("echo 'Aplikuję wygląd Colloid (Purple)...'")
+    runner("echo '--- KONFIGURACJA WYGLĄDU (COLLOID) ---'")
 
-    # Najpierw musimy zainstalować motywy ręcznie z gita
-    install_colloid_themes(runner)
-    setup_wallpaper(runner)
+    # 1. Pobieranie i instalacja Colloid GTK (Git)
+    runner("rm -rf /tmp/colloid-gtk /tmp/colloid-icon") # Czyszczenie
+    runner("git clone https://github.com/vinceliuice/Colloid-gtk-theme.git /tmp/colloid-gtk")
+    runner("sh /tmp/colloid-gtk/install.sh -t purple -s standard")
 
-    # Włączamy rozszerzenie User Themes (niezbędne do zmiany Shell Theme)
-    runner("gnome-extensions enable user-theme@gnome-shell-extensions.gcampax.github.com")
+    # 2. Pobieranie i instalacja Colloid Icons (Git)
+    runner("git clone https://github.com/vinceliuice/Colloid-icon-theme.git /tmp/colloid-icon")
+    runner("sh /tmp/colloid-icon/install.sh -t purple")
 
-    commands = [
-        # GTK Theme
+    # 3. Pobieranie tapety
+    runner("mkdir -p ~/Obrazy")
+    runner("curl -L 'https://i.imgur.com/Y9X3VQz.jpeg' -o ~/Obrazy/wallpaper.jpg")
+
+    # 4. Aplikowanie ustawień (gsettings)
+    cmds = [
+        # Motyw i Ikony
         "gsettings set org.gnome.desktop.interface gtk-theme 'Colloid-Purple-Dark'",
-        # Shell Theme (wymaga user-theme extension)
-        "gsettings set org.gnome.shell.extensions.user-theme name 'Colloid-Purple-Dark'",
-        # Ikony
         "gsettings set org.gnome.desktop.interface icon-theme 'Colloid-Purple-Dark'",
-        # Kursor
         "gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Classic-Black'",
-        # Fonty (opcjonalnie, jeśli chcesz jak w setup.sh)
-        # "gsettings set org.gnome.desktop.interface monospace-font-name 'JetBrainsMono Nerd Font 10'"
+
+        # Tapeta
+        "gsettings set org.gnome.desktop.background picture-uri 'file://$HOME/Obrazy/wallpaper.jpg'",
+        "gsettings set org.gnome.desktop.background picture-uri-dark 'file://$HOME/Obrazy/wallpaper.jpg'",
+        "gsettings set org.gnome.desktop.background picture-options 'zoom'",
+
+        # Aktywacja User Themes (niezbędne do zmiany Shell Theme)
+        "gnome-extensions enable user-theme@gnome-shell-extensions.gcampax.github.com",
+        "gsettings set org.gnome.shell.extensions.user-theme name 'Colloid-Purple-Dark'",
+
+        # Ustawienia okien (przycisk minimalizacji/maksymalizacji)
+        "gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:minimize,maximize,close'"
     ]
 
-    for cmd in commands:
-        # Używamy trybu user (bez sudo), runner w main_window powinien to obsługiwać
+    for cmd in cmds:
         runner(cmd)
+
+    # 5. Aktywacja reszty rozszerzeń na koniec
+    enable_extensions(runner)
