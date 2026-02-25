@@ -2,14 +2,12 @@ import sys
 import os
 import subprocess
 import threading
-import urllib.request
-import time
 import shutil
 import gi
 
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw, GLib, Gio, Gdk
+from gi.repository import Gtk, Adw, GLib, Gio, Gdk, Pango
 
 # ==============================================================================
 # 🔧 KONFIGURACJA OPROGRAMOWANIA
@@ -44,6 +42,7 @@ DE_LIST = [
     {"name": "KDE Plasma 6",      "pkg": "plasma-meta",       "id": "kde"},
     {"name": "GNOME",             "pkg": "gnome",             "id": "gnome"},
     {"name": "Hyprland",          "pkg": "hyprland",          "id": "hypr"},
+    {"name": "Cosmic",          "pkg": "cosmic",          "id": "cosmic"},
 ]
 
 # ==============================================================================
@@ -51,49 +50,78 @@ DE_LIST = [
 # ==============================================================================
 
 class InstallWorker(threading.Thread):
-    def __init__(self, password, queue, preset, on_progress, on_finish):
+    def __init__(self, password, queue, preset, on_progress, on_log, on_finish):
         super().__init__()
         self.password = password
         self.queue = queue
         self.preset = preset
         self.on_progress = on_progress
+        self.on_log = on_log  # Callback do logowania tekstu
         self.on_finish = on_finish
         self.daemon = True
         self.total_steps = len(queue) + 6
 
-    def run_cmd(self, cmd_list, use_shell=False):
-        # Obsługa sudo z hasłem
+    def run_cmd(self, cmd_list, use_shell=False, cwd=None):
+        """
+        Uruchamia komendę i przesyła wyjście (stdout/stderr) do konsoli w czasie rzeczywistym.
+        """
+        # Obsługa sudo
         if cmd_list[0] == "sudo":
             cmd_str = " ".join(cmd_list).replace("sudo", "sudo -S")
             full_cmd = f"echo '{self.password}' | {cmd_str}"
             use_shell = True
         else:
             full_cmd = cmd_list
+            # Jeśli lista, łączymy dla shell=True (łatwiejsze logowanie)
+            if isinstance(full_cmd, list):
+                full_cmd = " ".join(full_cmd)
+                use_shell = True
+
+        self.on_log(f"\n➜ Wykonuję: {full_cmd}\n")
 
         try:
-            # Uruchamiamy proces
-            subprocess.run(full_cmd, shell=use_shell, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            # Używamy Popen, aby czytać wyjście na żywo
+            process = subprocess.Popen(
+                full_cmd,
+                shell=use_shell,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, # Łączymy błędy z normalnym wyjściem
+                text=True,
+                bufsize=1 # Line buffered
+            )
+
+            # Czytanie linijka po linijce
+            for line in process.stdout:
+                self.on_log(line)
+
+            process.wait()
+
+            if process.returncode != 0:
+                self.on_log(f"\n❌ Błąd (kod {process.returncode})\n")
+                return False
+
             return True
-        except subprocess.CalledProcessError as e:
-            print(f"Błąd komendy: {full_cmd} -> {e}")
+
+        except Exception as e:
+            self.on_log(f"\n❌ Krytyczny błąd procesu: {e}\n")
             return False
 
     def install_git_script(self, repo_url):
-        """
-        Klonuje repozytorium i uruchamia install.sh / setup.sh
-        """
         repo_name = repo_url.split("/")[-1]
         tmp_dir = f"/tmp/{repo_name}"
 
-        # 1. Czyszczenie starego folderu
+        self.on_log(f"--- Instalator GitHub: {repo_name} ---\n")
+
         if os.path.exists(tmp_dir):
+            self.on_log(f"Czyszczenie starego folderu: {tmp_dir}\n")
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        # 2. Klonowanie
+        self.on_log(f"Klonowanie {repo_url}...\n")
+        # Tu używamy run_cmd, więc logi z gita polecą do konsoli
         if not self.run_cmd(["git", "clone", repo_url, tmp_dir]):
             return False
 
-        # 3. Szukanie skryptu instalacyjnego
         script_files = ["install.sh", "setup.sh", "main.sh", "installer.sh"]
         script_to_run = None
 
@@ -103,59 +131,62 @@ class InstallWorker(threading.Thread):
                 break
 
         if not script_to_run:
-            print(f"Nie znaleziono skryptu instalacyjnego w {repo_name}")
+            self.on_log("❌ Nie znaleziono skryptu instalacyjnego!\n")
             return False
 
-        # 4. Nadanie uprawnień i uruchomienie
-        # Ważne: Petexy skrypty często wymagają roota, więc używamy sudo
+        self.on_log(f"Uruchamianie skryptu: {script_to_run}...\n")
         self.run_cmd(["chmod", "+x", f"{tmp_dir}/{script_to_run}"])
 
-        # Uruchamiamy skrypt wewnątrz folderu (cwd)
-        cmd = f"echo '{self.password}' | sudo -S ./{script_to_run}"
-        try:
-            subprocess.run(cmd, shell=True, check=True, cwd=tmp_dir)
-            return True
-        except Exception as e:
-            print(f"Błąd instalacji {repo_name}: {e}")
-            return False
+        # Uruchomienie skryptu (run_cmd obsłuży sudo i logi)
+        cmd = ["sudo", f"./{script_to_run}"]
+        return self.run_cmd(cmd, cwd=tmp_dir)
 
     def install_pkg_string(self, source, pkg_name):
         if source == "flatpak":
             return self.run_cmd(["sudo", "flatpak", "install", "flathub", pkg_name, "-y"])
         elif source == "aur":
+            # Yay wymaga specyficznych flag, żeby nie pytać użytkownika
             return self.run_cmd(["yay", "-S", pkg_name, "--noconfirm", "--answerdiff", "None", "--answerclean", "None"])
         elif source == "git_script":
-            return self.install_git_script(pkg_name) # pkg_name to tutaj URL
+            return self.install_git_script(pkg_name)
         else:
             return self.run_cmd(["sudo", "pacman", "-S", pkg_name, "--noconfirm", "--needed"])
 
     def configure_preset(self):
-        # Tutaj wywołujesz funkcje z plasma.py / gnome.py w zależności od wyboru
-        # Ta część kodu zależy od tego, jak importujesz te moduły w main_window
+        # Placeholder na importy z gnome.py / plasma.py
         pass
 
     def run(self):
         current_step = 0
+        self.on_log("--- ROZPOCZĘCIE INSTALACJI ---\n")
 
         self.on_progress(5, "Aktualizacja systemu...")
         self.run_cmd(["sudo", "pacman", "-Sy"])
-
-        # Upewniamy się, że git jest zainstalowany
         self.run_cmd(["sudo", "pacman", "-S", "git", "base-devel", "flatpak", "wget", "--noconfirm", "--needed"])
 
+        self.on_progress(10, "Konfiguracja Flatpak...")
         cmd = ["sudo", "flatpak", "remote-add", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"]
         self.run_cmd(cmd)
 
         for item in self.queue:
             percent = int((current_step / self.total_steps) * 80) + 10
             self.on_progress(percent, f"Instalacja: {item['name']}...")
-            self.install_pkg_string(item.get('source', 'pacman'), item['pkg'])
+            self.on_log(f"\n--- Instalowanie pakietu: {item['name']} ---\n")
+
+            success = self.install_pkg_string(item.get('source', 'pacman'), item['pkg'])
+            if success:
+                self.on_log("✅ Sukces.\n")
+            else:
+                self.on_log("⚠️ Ostrzeżenie: Coś poszło nie tak.\n")
+
             current_step += 1
 
         if self.preset != "clean":
-            self.configure_preset() # Tu powinna być logika importu (np. z gnome.py)
+            self.on_log("\n--- Konfiguracja Presetu ---\n")
+            self.configure_preset()
 
         self.on_progress(100, "Finalizowanie...")
+        self.on_log("\n--- ZAKOŃCZONO ---\n")
         GLib.idle_add(self.on_finish, True)
 
 # ==============================================================================
@@ -165,7 +196,7 @@ class InstallWorker(threading.Thread):
 class InstallerWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Arch Setup")
-        self.set_default_size(950, 700)
+        self.set_default_size(950, 750) # Zwiększyłem lekko wysokość
 
         manager = Adw.StyleManager.get_default()
         manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
@@ -187,12 +218,13 @@ class InstallerWindow(Adw.ApplicationWindow):
         self.init_welcome()
         self.init_soft()
         self.init_de()
-        self.init_presets() # Zakładam, że ta metoda jest zdefiniowana tak jak wcześniej
+        self.init_presets()
         self.init_progress()
         self.init_finish()
 
     def load_css(self):
         provider = Gtk.CssProvider()
+        # Dodano klasę .console-view
         css = b"""
         .blue-btn { background-color: #3584e4; color: white; font-weight: bold; border-radius: 9999px; padding: 10px 40px; }
         .purple-btn { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; border-radius: 9999px; padding: 10px 40px; }
@@ -200,14 +232,19 @@ class InstallerWindow(Adw.ApplicationWindow):
         .preset-title { font-size: 18px; font-weight: bold; color: #cba6f7; }
         .violet-progress progress { background-color: #cba6f7; border-radius: 6px; min-height: 12px; }
         .violet-progress trough { background-color: #313244; border-radius: 6px; min-height: 12px; }
+
+        .console-view {
+            background-color: #11111b;
+            color: #a6e3a1;
+            font-family: 'JetBrains Mono', 'Monospace';
+            font-size: 11px;
+            padding: 10px;
+        }
         """
         provider.load_from_data(css)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    # --- STRONY (Welcome, Soft, DE, Presets, Progress, Finish) ---
-    # Te metody są identyczne jak w poprzednich wersjach,
-    # skopiuj je z poprzedniego main_window.py jeśli ich tu brakuje.
-    # Wklejam kluczową metodę init_soft z nową listą:
+    # --- STRONY ---
 
     def init_welcome(self):
         page = Adw.StatusPage()
@@ -227,10 +264,8 @@ class InstallerWindow(Adw.ApplicationWindow):
         group = Adw.PreferencesGroup(title="Wybierz programy")
         self.soft_checks = {}
         for item in SOFTWARE_LIST:
-            # Dodajemy informację o źródle do podtytułu
             src_label = " (Flatpak)" if item['source'] == "flatpak" else " (Repo)"
             if item['source'] == "git_script": src_label = " (Instalator GitHub)"
-
             row = Adw.ActionRow(title=item['name'], subtitle=item['pkg'] + src_label)
             check = Gtk.CheckButton()
             check.set_active(item['checked'])
@@ -239,18 +274,13 @@ class InstallerWindow(Adw.ApplicationWindow):
             group.add(row)
             self.soft_checks[item['pkg']] = (check, item)
         page.add(group)
-
         btn = Gtk.Button(label="Dalej")
         btn.add_css_class("blue-btn")
         btn.set_halign(Gtk.Align.CENTER)
         btn.set_margin_top(20)
         btn.connect("clicked", lambda x: self.stack.set_visible_child_name("desktop"))
-
         grp = Adw.PreferencesGroup(); grp.add(btn); page.add(grp)
         self.stack.add_named(page, "software")
-
-    # (Tu wklej resztę metod: init_de, init_presets, create_preset_card, init_progress, init_finish, on_install_clicked, ask_password, update_prog)
-    # Są one takie same jak w poprzednich krokach, ale ważne by InstallWorker był zaktualizowany (ten powyżej).
 
     def init_de(self):
         page = Adw.PreferencesPage()
@@ -292,16 +322,11 @@ class InstallerWindow(Adw.ApplicationWindow):
         page.add(group)
         self.preset_radios = {}
         r_group = None
-
-        # Karty presetów (skrócone dla czytelności)
         p1 = self.create_preset_card("✨ Layan Dock", "Dock, Blur, Rounded Corners.", "dock", r_group)
         r_group = p1[0]; group.add(p1[1]); self.preset_radios["dock"] = p1[0]
-
         p3 = self.create_preset_card("🧹 Czysta Plasma", "Domyślny wygląd.", "clean", r_group)
         group.add(p3[1]); self.preset_radios["clean"] = p3[0]
-
         self.preset_radios["dock"].set_active(True)
-
         btn = Gtk.Button(label="Zainstaluj wszystko")
         btn.add_css_class("purple-btn")
         btn.set_halign(Gtk.Align.CENTER)
@@ -325,12 +350,53 @@ class InstallerWindow(Adw.ApplicationWindow):
         card.append(radio)
         return (radio, card)
 
+    # --- PROGRESS Z KONSOLĄ ---
     def init_progress(self):
-        self.page_progress = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=30, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
+        self.page_progress = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=30)
+        self.page_progress.set_valign(Gtk.Align.FILL) # FILL żeby zająć miejsce
+        self.page_progress.set_halign(Gtk.Align.FILL)
+        self.page_progress.set_margin_top(50)
+        self.page_progress.set_margin_bottom(50)
+        self.page_progress.set_margin_start(50)
+        self.page_progress.set_margin_end(50)
+
+        # 1. Górna część: Pasek postępu i status
+        top_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        top_box.set_valign(Gtk.Align.CENTER)
+        top_box.set_halign(Gtk.Align.CENTER)
+
         self.progress_bar = Gtk.ProgressBar(css_classes=["violet-progress"], width_request=400)
-        self.lbl_status = Gtk.Label(label="Czekam...", css_classes=["title-2"])
-        self.page_progress.append(self.progress_bar)
-        self.page_progress.append(self.lbl_status)
+        self.lbl_status = Gtk.Label(label="Inicjalizacja...", css_classes=["title-2"])
+
+        top_box.append(self.progress_bar)
+        top_box.append(self.lbl_status)
+        self.page_progress.append(top_box)
+
+        # 2. Dolna część: Expander z konsolą
+        self.expander = Gtk.Expander(label="Pokaż konsolę")
+        self.expander.set_vexpand(True) # Żeby zajmował resztę miejsca
+
+        # Okno przewijane
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_min_content_height(300)
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+
+        # Widok tekstowy (Logi)
+        self.log_view = Gtk.TextView()
+        self.log_view.set_editable(False)
+        self.log_view.set_cursor_visible(False)
+        self.log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.log_view.add_css_class("console-view")
+
+        # Buffer do tekstu
+        self.log_buffer = self.log_view.get_buffer()
+
+        scrolled.set_child(self.log_view)
+        self.expander.set_child(scrolled)
+
+        self.page_progress.append(self.expander)
+
         self.stack.add_named(self.page_progress, "progress")
 
     def init_finish(self):
@@ -355,16 +421,33 @@ class InstallerWindow(Adw.ApplicationWindow):
         entry = Gtk.PasswordEntry()
         entry.connect("activate", lambda w: dialog.response("ok"))
         dialog.set_extra_child(entry)
+
         def on_res(d, r):
             if r == "ok":
-                pwd = entry.get_text(); d.close(); self.stack.set_visible_child_name("progress")
-                InstallWorker(pwd, queue, preset, self.update_prog, lambda x: self.stack.set_visible_child_name("finish")).start()
-            else: d.close()
+                pwd = entry.get_text()
+                d.close()
+                self.stack.set_visible_child_name("progress")
+                # Przekazujemy self.append_log jako callback
+                InstallWorker(pwd, queue, preset, self.update_prog, self.append_log, lambda x: self.stack.set_visible_child_name("finish")).start()
+            else:
+                d.close()
+
         dialog.connect("response", on_res)
         dialog.present()
 
     def update_prog(self, pct, txt):
         GLib.idle_add(lambda: (self.progress_bar.set_fraction(pct/100), self.lbl_status.set_text(txt)))
+
+    def append_log(self, text):
+        """Dodaje tekst do konsoli w sposób bezpieczny dla wątków"""
+        def _update():
+            end_iter = self.log_buffer.get_end_iter()
+            self.log_buffer.insert(end_iter, text)
+            # Autoscroll
+            adj = self.log_view.get_parent().get_vadjustment()
+            adj.set_value(adj.get_upper() - adj.get_page_size())
+            return False
+        GLib.idle_add(_update)
 
 class InstallerApp(Adw.Application):
     def __init__(self): super().__init__(application_id="com.arch.setup", flags=Gio.ApplicationFlags.FLAGS_NONE)
