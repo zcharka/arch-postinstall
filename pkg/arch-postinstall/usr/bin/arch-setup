@@ -1,2 +1,0 @@
-#!/bin/sh
-exec python /opt/arch-postinstall/ui/main_window.py
