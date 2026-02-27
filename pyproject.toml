@@ -1,0 +1,11 @@
+[project]
+name = "arch-postinstall"
+version = "0.1.0"
+description = "Skrypt poinstalacyjny dla Arch Linux"
+dependencies = [
+    # Tu wpisz biblioteki, np. 'requests', jeśli będziesz coś pobierać
+]
+
+[project.scripts]
+# To stworzy komendę 'arch-setup' w Twoim systemie po instalacji paczki
+arch-setup = "postinstall.main:run"

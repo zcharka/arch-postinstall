@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=RatInstall Presets
+Comment=Change KDE Plasma themes
+Exec=ratinstall-presets
+Icon=preferences-desktop-theme
+Terminal=false
+Type=Application
+Categories=System;
