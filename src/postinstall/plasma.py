@@ -1,29 +1,27 @@
+import subprocess
 import os
 import sys
 
-# --- ROZWIĄZYWANIE ŚCIEŻEK ---
-def get_resource_path(relative_path):
-    """
-    Znajduje plik relatywnie do lokalizacji TEGO pliku (plasma.py).
-    Działa to lepiej niż szukanie w '.' (katalogu roboczym).
+# --- WAŻNE DLA PYINSTALLERA ---
+def resource_path(relative_path):
+    """ Zwraca absolutną ścieżkę do zasobu, działającą zarówno w Dev jak i w PyInstaller """
+    try:
+        # PyInstaller tworzy folder tymczasowy w _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
 
-    Struktura w /opt/arch-postinstall:
-      /opt/arch-postinstall/src/postinstall/plasma.py
-      /opt/arch-postinstall/src/layouts/custom_dock.js
-    """
-    # Pobieramy ścieżkę do folderu, w którym jest ten plik (postinstall)
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-
-    # Wychodzimy jeden poziom wyżej (do src) i wchodzimy w żądaną ścieżkę
-    # relative_path powinno być np. "layouts/custom_dock.js"
-    return os.path.join(current_dir, "..", relative_path)
+    return os.path.join(base_path, relative_path)
 
 # --- FUNKCJE INSTALACYJNE ---
 
 def install_plasma_deps(runner):
+    """
+    runner: funkcja przyjmująca treść komendy (np. self.run_cmd z GUI)
+    """
     runner("echo 'Instaluję dodatki dla KDE Plasma (Themes, Effects)...'")
 
-    # Lista pakietów z AUR (identyczna jak w Twoim setup.sh dla KDE)
+    # Lista pakietów z AUR
     aur_packages = [
         "layan-kde-git",                    # Motyw Layan
         "tela-circle-icon-theme-git",       # Ikony
@@ -32,13 +30,16 @@ def install_plasma_deps(runner):
         "bibata-cursor-theme-bin"           # Kursor
     ]
 
+    # Instalacja (zakładamy, że yay jest skonfigurowany)
+    # Używamy join, żeby stworzyć jeden długi string
     packages_str = " ".join(aur_packages)
-    runner(f"yay -S --noconfirm --needed {packages_str}")
+    runner(f"yay -S --noconfirm {packages_str}")
 
 def apply_custom_look(runner):
     runner("echo 'Aplikuję wygląd Layan i efekty...'")
 
     # 1. Ustawienie Motywu Globalnego
+    # Próbujemy, ale nie przerywamy w razie błędu (try/except obsłużone w runnerze GUI lub ignorowane tutaj)
     runner("plasma-apply-lookandfeel -a org.kde.layan.desktop || echo 'Ostrzeżenie: Nie udało się narzucić motywu globalnego'")
 
     # 2. Ustawienie Kursora
@@ -49,6 +50,7 @@ def apply_custom_look(runner):
     kwinrc_cmds = [
         "kwriteconfig6 --file kwinrc --group Plugins --key betterblurEnabled true",
         "kwriteconfig6 --file kwinrc --group Plugins --key rounded-window-cornersEnabled true",
+        # Przeładowanie KWin
         "qdbus6 org.kde.KWin /KWin reconfigure"
     ]
     for cmd in kwinrc_cmds:
@@ -57,15 +59,22 @@ def apply_custom_look(runner):
 def apply_layout_preset(runner):
     runner("echo 'Ustawiam układ paneli (Dock + Top Bar)...'")
 
-    # Szukamy skryptu w folderze layouts (obok postinstall)
-    script_path = get_resource_path("layouts/custom_dock.js")
+    # --- TU BYŁ BŁĄD: Teraz używamy poprawnie resource_path ---
+    # Szukamy pliku js wewnątrz paczki programu
+    script_path = resource_path(os.path.join("src", "layouts", "custom_dock.js"))
 
     if os.path.exists(script_path):
+        # Wczytujemy treść skryptu do zmiennej, aby uniknąć problemów ze ścieżkami w shellu
         try:
-            # Kopiujemy skrypt do /tmp, aby uniknąć problemów z uprawnieniami/znakami specjalnymi
+            with open(script_path, 'r') as f:
+                script_content = f.read()
+
+            # Escape'owanie cudzysłowów dla basha jest trudne,
+            # więc bezpieczniej jest zapisać skrypt w tmp i go wykonać
             runner(f"cp '{script_path}' /tmp/layout_script.js")
             runner("qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \"$(cat /tmp/layout_script.js)\"")
+
         except Exception as e:
-            runner(f"echo 'Błąd wykonywania skryptu layoutu: {e}'")
+            runner(f"echo 'Błąd odczytu skryptu layoutu: {e}'")
     else:
-        runner(f"echo 'Błąd: Nie znaleziono pliku layoutu: {script_path}'")
+        runner(f"echo 'Błąd: Nie znaleziono pliku layoutu pod ścieżką: {script_path}'")
