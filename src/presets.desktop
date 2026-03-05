@@ -1,9 +1,0 @@
-#!/usr/bin/env xdg-open
-[Desktop Entry]
-Name=RatPresets
-Comment=Zmień wygląd systemu
-Exec=arch-presets
-Icon=preferences-desktop-theme
-Terminal=false
-Type=Application
-Categories=Settings;GTK;
