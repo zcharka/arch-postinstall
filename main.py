@@ -17,7 +17,7 @@ POSTER_URL = "https://i.imgur.com/Y9X3VQz.jpeg"
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.set_title("Rat Center")
+        self.set_title("ArchRat")
         self.set_default_size(1000, 700)
         
         # Main layout: Box with Sidebar and Content
@@ -40,7 +40,7 @@ class MainWindow(Adw.ApplicationWindow):
         # Title in Sidebar Header
         title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         logo = Gtk.Image.new_from_icon_name("computer-symbolic")
-        title_label = Gtk.Label(label="<b>Rat Center</b>", use_markup=True)
+        title_label = Gtk.Label(label="<b>ArchRat</b>", use_markup=True)
         title_box.append(logo)
         title_box.append(title_label)
         sidebar_header.set_title_widget(title_box)
@@ -258,7 +258,7 @@ class MainWindow(Adw.ApplicationWindow):
 
 class RatApp(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="com.rat.center", flags=Gio.ApplicationFlags.FLAGS_NONE)
+        super().__init__(application_id="org.archrat.installer", flags=Gio.ApplicationFlags.FLAGS_NONE)
 
     def do_startup(self):
         Adw.Application.do_startup(self)
@@ -271,7 +271,6 @@ class RatApp(Adw.Application):
         }
         .card {
             border-radius: 12px;
-            overflow: hidden;
             box-shadow: 0 4px 12px rgba(0,0,0,0.5);
         }
         button.pill {
